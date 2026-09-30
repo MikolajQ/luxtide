@@ -37,7 +37,10 @@ DDCUTIL = "/usr/bin/ddcutil"
 BACKOFF_CAP = dt.timedelta(minutes=15)
 
 # Tryb --watch: odczyt sysfs jest mikrosekundowy, więc można pytać często.
+# Ale częsta reakcja jest potrzebna tylko wtedy, gdy przygaszamy — przy poziomie
+# dziennym monitor po wybudzeniu wraca dokładnie na to, czego chcemy.
 WATCH_POLL = 2.0
+WATCH_POLL_IDLE = 20.0
 # Sekundy po wybudzeniu, w których ponawiamy zapis. Firmware przywraca własną
 # jasność kilkanaście sekund po przebudzeniu, a nie wiemy dokładnie kiedy —
 # więc pokrywamy całą pierwszą minutę, zagęszczając próby na początku.
@@ -372,6 +375,11 @@ def wake_burst(cfg, verbose=False):
     później firmware podmienia ją na własną. Nie wiadomo dokładnie kiedy, więc
     zamiast zgadywać moment, pokrywamy zapisami całe okno.
     """
+    if level_at(dt.datetime.now(cfg.tz), cfg) >= cfg.day:
+        if verbose:
+            print("wybudzenie przy poziomie dziennym — nie ma czego korygować")
+        return
+
     started = time.monotonic()
     for offset in WAKE_BURST:
         delay = offset - (time.monotonic() - started)
@@ -396,11 +404,18 @@ def watch_loop(cfg, verbose=False):
     zanim tyknie, ekran zdąży świecić pełną mocą nawet ponad minutę.
     """
     was_awake = display_awake()
+    dimming = None
     if verbose:
-        print(f"obserwuję panel co {WATCH_POLL:.0f} s (stan: "
+        print(f"obserwuję panel (stan: "
               f"{'wybudzony' if was_awake else 'wygaszony'})")
     while True:
-        time.sleep(WATCH_POLL)
+        now_dimming = level_at(dt.datetime.now(cfg.tz), cfg) < cfg.day
+        if verbose and now_dimming != dimming:
+            interval = WATCH_POLL if now_dimming else WATCH_POLL_IDLE
+            powod = "przygaszamy" if now_dimming else "poziom dzienny"
+            print(f"czujność: co {interval:.0f} s ({powod})")
+            dimming = now_dimming
+        time.sleep(WATCH_POLL if now_dimming else WATCH_POLL_IDLE)
         awake = display_awake()
         if awake and not was_awake:
             if verbose:
