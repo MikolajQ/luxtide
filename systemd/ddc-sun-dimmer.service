@@ -1,0 +1,15 @@
+[Unit]
+Description=Sun-based monitor brightness via DDC/CI
+Documentation=man:ddcutil(1)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ddc-sun-dimmer --verbose
+# The monitor may be in DPMS or switched off — a failure should not mark the
+# unit as broken, since the timer retries a minute later anyway.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=graphical-session.target

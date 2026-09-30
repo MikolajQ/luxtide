@@ -1,0 +1,15 @@
+[Unit]
+Description=Check monitor brightness level every minute
+
+[Timer]
+OnStartupSec=30s
+# Every minute: in smooth mode the level creeps by ~1% every few minutes, and
+# outside transition windows the script writes nothing anyway, so an idle run
+# costs only the Python startup (~0.1 s CPU).
+OnUnitActiveSec=1min
+# Catches up on windows slept through while suspended or powered off.
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
