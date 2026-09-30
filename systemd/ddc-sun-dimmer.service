@@ -11,5 +11,11 @@ ExecStart=%h/.local/bin/ddc-sun-dimmer --verbose
 # unit as broken, since the timer retries a minute later anyway.
 SuccessExitStatus=0 1
 
+# ddcutil probes the monitor on every write and logs failures straight to
+# syslog, bypassing our stderr capture. On a display whose reads are broken
+# those probes always fail, so they are noise with no diagnostic value.
+LogFilterPatterns=~read_unsupported_feature
+LogFilterPatterns=~Error detecting VCP version
+
 [Install]
 WantedBy=graphical-session.target

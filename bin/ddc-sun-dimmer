@@ -48,7 +48,8 @@ DEFAULTS = {
                  "curve": "perceptual",
                  "wake_window_seconds": "90", "refresh_minutes": "5"},
     "ddc": {"bus": "", "sleep_multiplier": "2", "retries": "5",
-            "repeats": "3", "settle": "0.2"},
+            "repeats": "3", "settle": "0.2", "syslog": "NEVER",
+            "mccs": ""},
     # Domyślnie wyłączone: nadpisywanie cudzych ustawień koloru jest
     # zaskakujące, a rozszerzenia pokroju Night Light Scheduler robią to
     # lepiej. Włączać świadomie.
@@ -120,6 +121,15 @@ class Config:
         self.retries = parser.getint("ddc", "retries")
         self.repeats = parser.getint("ddc", "repeats")
         self.settle = parser.getfloat("ddc", "settle")
+        # ddcutil sonduje monitor przy każdym zapisie i wysyła wyniki wprost do
+        # syslog, z pominięciem naszego przechwytywania stderr. Na monitorze
+        # z zepsutym odczytem te sondy zawsze padają, zasypując dziennik.
+        # Puste = nie przekazuj flagi (ddcutil starszy niż 2.0 jej nie zna).
+        self.syslog = parser.get("ddc", "syslog").strip()
+        # Podanie wersji MCCS oszczędza ddcutilowi wykrywania jej przy każdym
+        # zapisie — na monitorze z zepsutym odczytem to wykrywanie i tak pada,
+        # tylko zasypuje dziennik. Puste = niech wykrywa sam.
+        self.mccs = parser.get("ddc", "mccs").strip()
 
         self.sync_night_light = parser.getboolean("night_light", "sync")
 
@@ -224,9 +234,11 @@ def detect_bus(cfg):
     if cache.exists():
         return cache.read_text().strip()
 
-    out = subprocess.run(
-        [DDCUTIL, "detect", "--brief"], capture_output=True, text=True, timeout=60
-    ).stdout
+    detect = [DDCUTIL, "detect", "--brief"]
+    if cfg.syslog:
+        detect.append(f"--syslog={cfg.syslog}")
+    out = subprocess.run(detect, capture_output=True, text=True,
+                         timeout=60).stdout
     for line in out.splitlines():
         if "/dev/i2c-" in line:
             bus = line.split("/dev/i2c-")[1].split()[0]
@@ -251,12 +263,15 @@ def display_awake():
 def write_once(bus, level, cfg):
     """Jedna transakcja, z ponowieniami błędów widocznych dla sterownika."""
     for _ in range(cfg.retries):
-        result = subprocess.run(
-            [DDCUTIL, "--bus", bus, "--noverify",
-             "--sleep-multiplier", cfg.sleep_multiplier,
-             "setvcp", "10", str(level)],
-            capture_output=True, text=True, timeout=60,
-        )
+        command = [DDCUTIL, "--bus", bus, "--noverify",
+                   "--sleep-multiplier", cfg.sleep_multiplier]
+        if cfg.syslog:
+            command.append(f"--syslog={cfg.syslog}")
+        if cfg.mccs:
+            command += ["--mccs", cfg.mccs]
+        command += ["setvcp", "10", str(level)]
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=60)
         if result.returncode == 0 and "failed" not in result.stderr.lower():
             return True
     return False

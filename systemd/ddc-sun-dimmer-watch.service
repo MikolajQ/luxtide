@@ -13,5 +13,11 @@ RestartSec=10s
 # process, not the polling.
 Nice=10
 
+# ddcutil probes the monitor on every write and logs failures straight to
+# syslog, bypassing our stderr capture. On a display whose reads are broken
+# those probes always fail, so they are noise with no diagnostic value.
+LogFilterPatterns=~read_unsupported_feature
+LogFilterPatterns=~Error detecting VCP version
+
 [Install]
 WantedBy=graphical-session.target
