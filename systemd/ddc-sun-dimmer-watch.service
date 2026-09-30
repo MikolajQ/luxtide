@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/ddc-sun-dimmer --watch --verbose
+ExecStart=%h/.local/bin/ddc-sun-dimmer-watch
 Restart=on-failure
 RestartSec=10s
 # Reads one sysfs file every couple of seconds; the cost is the sleeping

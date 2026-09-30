@@ -36,11 +36,6 @@ STATE_DIR = pathlib.Path(
 DDCUTIL = "/usr/bin/ddcutil"
 BACKOFF_CAP = dt.timedelta(minutes=15)
 
-# Tryb --watch: odczyt sysfs jest mikrosekundowy, więc można pytać często.
-# Ale częsta reakcja jest potrzebna tylko wtedy, gdy przygaszamy — przy poziomie
-# dziennym monitor po wybudzeniu wraca dokładnie na to, czego chcemy.
-WATCH_POLL = 2.0
-WATCH_POLL_IDLE = 20.0
 # Sekundy po wybudzeniu, w których ponawiamy zapis. Firmware przywraca własną
 # jasność kilkanaście sekund po przebudzeniu, a nie wiemy dokładnie kiedy —
 # więc pokrywamy całą pierwszą minutę, zagęszczając próby na początku.
@@ -397,41 +392,6 @@ def wake_burst(cfg, verbose=False):
               f"{WAKE_BURST[-1]} s")
 
 
-def watch_loop(cfg, verbose=False):
-    """Pilnuje stanu panelu i reaguje na wybudzenie w sekundy, nie w minuty.
-
-    Timer co minutę prowadzi rampę, ale do wykrycia wybudzenia jest za wolny:
-    zanim tyknie, ekran zdąży świecić pełną mocą nawet ponad minutę.
-    """
-    was_awake = display_awake()
-    dimming = None
-    if verbose:
-        print(f"obserwuję panel (stan: "
-              f"{'wybudzony' if was_awake else 'wygaszony'})")
-    while True:
-        now_dimming = level_at(dt.datetime.now(cfg.tz), cfg) < cfg.day
-        if verbose and now_dimming != dimming:
-            interval = WATCH_POLL if now_dimming else WATCH_POLL_IDLE
-            powod = "przygaszamy" if now_dimming else "poziom dzienny"
-            print(f"czujność: co {interval:.0f} s ({powod})")
-            dimming = now_dimming
-        time.sleep(WATCH_POLL if now_dimming else WATCH_POLL_IDLE)
-        awake = display_awake()
-        if awake and not was_awake:
-            if verbose:
-                print("wykryto wybudzenie, narzucam poziom")
-            (STATE_DIR / "wake-until").write_text(
-                (dt.datetime.now(cfg.tz) + cfg.wake_window).isoformat())
-            wake_burst(cfg, verbose)
-        elif not awake and was_awake:
-            # Stan przestał opisywać sprzęt — patrz komentarz w main().
-            (STATE_DIR / "level").unlink(missing_ok=True)
-            (STATE_DIR / "wake-until").write_text("asleep")
-            if verbose:
-                print("panel wygaszony")
-        was_awake = awake
-
-
 # --- główna logika --------------------------------------------------------
 
 
@@ -457,8 +417,6 @@ def main():
                         help="zapisz nawet gdy poziom się nie zmienił")
     parser.add_argument("--status", action="store_true",
                         help="pokaż harmonogram i wyjdź, niczego nie zmieniając")
-    parser.add_argument("--watch", action="store_true",
-                        help="pilnuj wybudzeń panelu i reaguj natychmiast")
     parser.add_argument("--wake", action="store_true",
                         help="wykonaj serię zapisów jak po wybudzeniu")
     parser.add_argument("--verbose", action="store_true")
@@ -472,15 +430,15 @@ def main():
         show_status(now, cfg)
         return 0
 
-    if args.watch:
-        watch_loop(cfg, args.verbose)
-        return 0
-
     if args.wake:
         wake_burst(cfg, args.verbose)
         return 0
 
     level = level_at(now, cfg)
+    # Trwały ślad docelowego poziomu. Plik "level" opisuje, co według nas trzyma
+    # sprzęt, i znika przy uśpieniu; obserwator potrzebuje wartości, która
+    # przetrwa, żeby wiedzieć, czy w ogóle warto być czujnym.
+    (STATE_DIR / "target").write_text(str(level))
     if cfg.sync_night_light:
         sync_night_light(now, cfg)
 
