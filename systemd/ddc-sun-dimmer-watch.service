@@ -1,0 +1,17 @@
+[Unit]
+Description=React to monitor wake-ups immediately
+Documentation=man:ddcutil(1)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ddc-sun-dimmer --watch --verbose
+Restart=on-failure
+RestartSec=10s
+# Reads one sysfs file every couple of seconds; the cost is the sleeping
+# process, not the polling.
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target
