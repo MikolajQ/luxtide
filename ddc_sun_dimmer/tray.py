@@ -371,6 +371,7 @@ class Tray:
         self._tooltip = None
         self._label = ""
         self._scroll_signs = {}
+        self._said = set()
         self.name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
 
         item_node = Gio.DBusNodeInfo.new_for_xml(ITEM_XML)
@@ -399,7 +400,7 @@ class Tray:
         def done(conn, result):
             try:
                 conn.call_finish(result)
-                log.info("tray icon registered")
+                self._say("tray icon registered")
             except GLib.Error as error:
                 log.warning("tray host refused the icon: %s", error.message)
         connection.call(WATCHER, "/StatusNotifierWatcher", WATCHER,
@@ -407,8 +408,17 @@ class Tray:
                         None, Gio.DBusCallFlags.NONE, 5000, None, done)
 
     def _watcher_vanished(self, connection, name):
-        log.info("no tray host on the session bus (on GNOME this needs the "
-                 "AppIndicator extension); the icon will appear when one starts")
+        # GNOME disables extensions, the tray host among them, whenever the
+        # screen locks; say so once, not at every lock.
+        self._say("no tray host on the session bus (on GNOME this needs the "
+                  "AppIndicator extension); the icon appears when one starts")
+
+    def _say(self, message):
+        if message in self._said:
+            log.debug(message)
+        else:
+            self._said.add(message)
+            log.info(message)
 
     # --- updates -----------------------------------------------------------
 
