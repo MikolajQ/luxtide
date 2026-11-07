@@ -338,6 +338,24 @@ def load(path=None):
     return cfg
 
 
+# Everything the day chart and its handles can change.
+CURVE_FIELDS = ("day", "twilight", "night", "mode", "smooth", "margin_minutes",
+                "curve_shape", "night_elevation", "twilight_elevation", "day_elevation")
+
+
+def reset_curve(cfg):
+    """Put the curve back to the defaults and leave everything else alone.
+
+    Returns False when the curve already had the default values.
+    """
+    defaults = Config()
+    if all(getattr(cfg, name) == getattr(defaults, name) for name in CURVE_FIELDS):
+        return False
+    for name in CURVE_FIELDS:
+        setattr(cfg, name, getattr(defaults, name))
+    return True
+
+
 # --- writing ---------------------------------------------------------------
 
 

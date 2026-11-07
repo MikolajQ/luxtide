@@ -38,6 +38,9 @@ CSS = """
 .banner { background: alpha(#e5a50a, 0.20); border-radius: 10px; padding: 10px 14px; }
 """
 
+CHART_HINT = ("Drag the round handles to change levels and the square ones to widen or "
+              "narrow the ramps.")
+
 MODES = ("time", "elevation")
 METHODS = ("auto", "mutter", "kde", "logind", "sysfs")
 
@@ -95,6 +98,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self._hover = None
         self._backed_up = False
         self._display_keys = None
+        self._hint_source = None
 
         self._build()
         self._fill()
@@ -376,15 +380,46 @@ class SettingsWindow(Gtk.ApplicationWindow):
             bar.append(widget)
         spacer = Gtk.Box(hexpand=True)
         bar.append(spacer)
+        d = config_module.Config()
+        reset = Gtk.Button(
+            label="Reset curve",
+            tooltip_text=f"Back to the default curve: {d.day} / {d.twilight} / {d.night} %, "
+                         f"ramps of ±{d.margin_minutes} min, geometric shape. Location, "
+                         f"weather and displays stay as they are.")
+        reset.connect("clicked", self._reset_curve)
+        bar.append(reset)
         perceived = Gtk.CheckButton(label="Perceived scale", active=True,
                                     tooltip_text="Vertical axis in CIE lightness, "
                                                  "closer to what the eye sees")
         perceived.connect("toggled", self._toggle_perceived)
         bar.append(perceived)
         box.append(bar)
-        box.append(label("Drag the round handles to change levels and the square ones to "
-                         "widen or narrow the ramps.", ("dim", "small"), wrap=True))
+        self.chart_hint = label(CHART_HINT, ("dim", "small"), wrap=True)
+        box.append(self.chart_hint)
         return box
+
+    def _reset_curve(self, *_):
+        if not config_module.reset_curve(self.cfg):
+            self._flash_hint("The curve already has the default values.")
+            return
+        self._fill()
+        self.changed()
+        if self._trying:
+            self._schedule_preview()
+        self._flash_hint("Curve back to the defaults. “Undo my changes” at the bottom "
+                         "restores the curve you had when this window opened.")
+
+    def _flash_hint(self, text, seconds=10):
+        """Show a note under the chart for a while, then the usual hint again."""
+        self.chart_hint.set_text(text)
+        if self._hint_source:
+            GLib.source_remove(self._hint_source)
+
+        def restore():
+            self._hint_source = None
+            self.chart_hint.set_text(CHART_HINT)
+            return False
+        self._hint_source = GLib.timeout_add_seconds(seconds, restore)
 
     def _shift_date(self, days):
         self._set_date(self.date + dt.timedelta(days=days))

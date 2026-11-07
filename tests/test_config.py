@@ -89,6 +89,22 @@ class Parsing(unittest.TestCase):
         self.assertEqual(source, "timezone")
         self.assertAlmostEqual(lat, 52.25)
 
+    def test_reset_curve_touches_only_the_curve(self):
+        cfg = make_config("[levels]\nday = 90\ntwilight = 40\nnight = 1\n"
+                          "[schedule]\nmode = elevation\nmargin_minutes = 120\n"
+                          "curve_shape = 0.2\nday_elevation = 9\n"
+                          "[weather]\nenabled = yes\nstrength = 35\n"
+                          "[ddc]\nrepeats = 3\n[display:mon]\noffset = -5\n")
+        self.assertTrue(config.reset_curve(cfg))
+        defaults = config.Config()
+        for name in config.CURVE_FIELDS:
+            self.assertEqual(getattr(cfg, name), getattr(defaults, name), name)
+        self.assertEqual((cfg.latitude, cfg.timezone), (52.2297, "Europe/Warsaw"))
+        self.assertEqual((cfg.weather_enabled, cfg.weather_strength), (True, 35))
+        self.assertEqual(cfg.ddc.repeats, 3)
+        self.assertEqual(cfg.display("mon").offset, -5)
+        self.assertFalse(config.reset_curve(cfg))      # nothing left to reset
+
     def test_render_mentions_every_section(self):
         text = config.render(make_config())
         for section in ("location", "levels", "schedule", "weather", "ddc", "backlight",
