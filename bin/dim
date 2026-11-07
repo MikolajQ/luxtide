@@ -1,88 +1,13 @@
-#!/usr/bin/env bash
-# Ręczne ustawianie jasności/kontrastu monitora przez DDC/CI.
-# Do szukania po omacku wartości, które na SyncMasterze BX2231 dają widoczne stopnie.
-#
-#   dim 40          jasność na 40 (zakres 1-100)
-#   dim -c 60       kontrast na 60
-#   dim status      co jest ustawione i kiedy następna zmiana
-#   dim pause       wstrzymaj automat na czas eksperymentów
-#   dim resume      wznów automat i od razu ustaw poziom wg słońca
-#
-# Warianty z myślnikami (--status, --pause, --resume) też działają.
+#!/usr/bin/env python3
+"""dim - quick manual brightness; see dim --help."""
+import os
+import sys
 
-set -u
+# Run from a source checkout (also through a symlink in ~/.local/bin).
+_root = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir))
+if os.path.isdir(os.path.join(_root, "ddc_sun_dimmer")):
+    sys.path.insert(0, _root)
 
-BUS=5
-RETRIES=5
-TIMER=ddc-sun-dimmer.timer
+from ddc_sun_dimmer.cli import dim_main  # noqa: E402
 
-# Zapis DDC/CI nie ma potwierdzenia, a odczyt na tym monitorze nie działa, więc
-# weryfikacja jest niemożliwa — jedyną obroną przed cichym zgubieniem ramki jest
-# wysłanie tej samej wartości kilka razy. Do eksperymentów: DIM_REPEATS=5 dim 40
-REPEATS=${DIM_REPEATS:-3}
-SETTLE=0.2
-
-usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; }
-
-# Jedna transakcja: ponawiamy tylko błędy widoczne dla sterownika.
-write_once() {
-    local code=$1 value=$2
-    for attempt in $(seq 1 $RETRIES); do
-        ddcutil --bus $BUS --noverify --sleep-multiplier 2 --syslog=NEVER \
-                setvcp "$code" "$value" >/dev/null 2>&1 && return 0
-    done
-    return 1
-}
-
-# Ten sam zapis powtórzony REPEATS razy — przeciw cichym zgubieniom ramki.
-apply() {
-    local code=$1 value=$2 name=$3 ok=0
-    for _ in $(seq 1 $REPEATS); do
-        write_once "$code" "$value" && ok=$((ok + 1))
-        sleep $SETTLE
-    done
-    if [[ $ok -eq 0 ]]; then
-        echo "nie udało się ustawić: $name $value%" >&2
-        return 1
-    fi
-    echo "$name $value%  ($ok/$REPEATS zapisów przeszło)"
-}
-
-# Dolna granica to 1, nie 0: zero potrafi wygasić podświetlenie całkowicie
-# i zostawić czarny ekran do odkręcenia wyłącznie z menu monitora.
-check_range() {
-    [[ $1 =~ ^[0-9]+$ ]] && [[ $1 -ge 1 ]] && [[ $1 -le 100 ]] && return 0
-    echo "nie rozumiem: $1" >&2
-    echo "oczekuję liczby 1-100 albo: status, pause, resume  (dim --help)" >&2
-    exit 1
-}
-
-case "${1-}" in
-    "" | -h | --help)
-        usage
-        ;;
-    status | -s | --status)
-        ddc-sun-dimmer --status
-        systemctl --user is-active --quiet $TIMER \
-            && echo "  automat:  włączony" \
-            || echo "  automat:  WSTRZYMANY (dim resume żeby wznowić)"
-        ;;
-    pause | stop | --pause)
-        systemctl --user stop $TIMER
-        echo "automat wstrzymany — ustawiaj do woli, nic Ci tego nie nadpisze"
-        ;;
-    resume | start | --resume)
-        systemctl --user start $TIMER
-        # Stan jest nieaktualny po ręcznych zmianach, więc wymuszamy zapis.
-        ddc-sun-dimmer --force --verbose
-        echo "automat wznowiony"
-        ;;
-    -c | --contrast)
-        check_range "${2-}"
-        apply 12 "$2" "kontrast"
-        ;;
-    *)
-        check_range "$1"
-        apply 10 "$1" "jasność"
-        ;;
-esac
+sys.exit(dim_main(sys.argv[1:]))

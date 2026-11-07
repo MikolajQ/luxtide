@@ -1,19 +1,21 @@
 [Unit]
-Description=Sun-based monitor brightness via DDC/CI
+Description=Display brightness that follows the sun (DDC/CI and backlight)
 Documentation=man:ddcutil(1)
-After=graphical-session.target
 PartOf=graphical-session.target
+After=graphical-session.target
+# The timer and watcher of version 1 must never run next to the daemon.
+Conflicts=ddc-sun-dimmer.timer ddc-sun-dimmer-watch.service
 
 [Service]
-Type=oneshot
-ExecStart=%h/.local/bin/ddc-sun-dimmer --verbose
-# The monitor may be in DPMS or switched off — a failure should not mark the
-# unit as broken, since the timer retries a minute later anyway.
-SuccessExitStatus=0 1
+Type=dbus
+BusName=io.github.DdcSunDimmer
+ExecStart=@BINDIR@/ddc-sun-dimmer daemon
+Restart=on-failure
+RestartSec=5s
 
-# ddcutil probes the monitor on every write and logs failures straight to
-# syslog, bypassing our stderr capture. On a display whose reads are broken
-# those probes always fail, so they are noise with no diagnostic value.
+# ddcutil can log DDC probing straight to syslog, past our stderr. With
+# --skip-ddc-checks little is left, but on monitors whose reads are broken
+# any probe that remains fails and only floods the journal.
 LogFilterPatterns=~read_unsupported_feature
 LogFilterPatterns=~Error detecting VCP version
 
