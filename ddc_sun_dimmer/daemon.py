@@ -147,6 +147,8 @@ class Daemon:
         self._signature = None
         self._status = {}
         self._poll_source = None
+        self._poll_current = None
+        self._in_poll = False
         self._reload_source = None
         self._preview_source = None
         self._zone = self.cfg.zone_name() if self.cfg else None
@@ -335,13 +337,27 @@ class Daemon:
         return interval
 
     def _arm_poll(self):
+        """(Re)start the panel poll, keeping the running timer when it fits."""
+        if self._in_poll:
+            return                        # _poll_timer re-arms after the poll
+        interval = self._poll_interval()
+        if self._poll_source and interval == self._poll_current:
+            return
         if self._poll_source:
             GLib.source_remove(self._poll_source)
-        self._poll_source = GLib.timeout_add_seconds(self._poll_interval(), self._poll_timer)
+        self._poll_current = interval
+        self._poll_source = GLib.timeout_add_seconds(interval, self._poll_timer)
 
     def _poll_timer(self):
+        self._in_poll = True
+        try:
+            self.poll()
+        finally:
+            self._in_poll = False
+        if self._poll_interval() == self._poll_current:
+            return True                   # one timer for the whole life, not one per poll
         self._poll_source = None
-        self.poll()
+        self._arm_poll()
         return False
 
     def poll(self):
@@ -369,7 +385,6 @@ class Daemon:
                         changed = True
         if changed:
             self.tick()
-        self._arm_poll()
 
     def _idle(self):
         if self._idle_bus is None:
@@ -512,7 +527,11 @@ class Daemon:
     def publish(self, force=False):
         status = self.status()
         self._status = status
-        signature = {k: v for k, v in status.items() if k not in ("now",)}
+        # Cloud cover is interpolated continuously, so the raw floats change at
+        # every tick; only a visible difference is worth a signal and a menu.
+        precision = {"cloud": 0, "base": 1, "factor": 2}
+        signature = {k: round(v, precision.get(k, 4)) if isinstance(v, float) else v
+                     for k, v in status.items() if k != "now"}
         if signature == self._signature and not force:
             return
         self._signature = signature
@@ -679,6 +698,7 @@ class Daemon:
     def _after_resume(self):
         self.rescan()
         self.poll()
+        self._arm_poll()
         self.weather_check()
         self.tick()
         return False
