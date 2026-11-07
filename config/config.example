@@ -1,0 +1,88 @@
+# ddc-sun-dimmer settings. The settings window rewrites this file; editing it
+# by hand works too, and the daemon picks up every change within a second.
+
+[location]
+# Decimal degrees, north and east positive. Leave both empty to use the
+# reference city of your time zone: rough, but it needs no setup.
+latitude =
+longitude =
+# IANA name such as Europe/Warsaw. Empty = follow the system time zone.
+timezone =
+
+[levels]
+# Brightness in percent, 1-100. Zero is refused on purpose: on some monitors
+# it switches the backlight off and leaves a black screen.
+day = 100
+twilight = 75
+night = 30
+
+[schedule]
+# time      = ramps of +/- margin_minutes around sunrise and sunset
+# elevation = brightness follows the height of the sun; adapts to the season
+#             by itself and also works inside the polar circles
+mode = time
+# no = jump between the three levels instead of ramping
+smooth = yes
+margin_minutes = 60
+# Shape of the ramps, 0-1. 0 = linear in brightness units; 1 = geometric,
+# which looks even to the eye on displays whose units are linear in light.
+curve_shape = 1
+# Sun elevation in degrees, used with mode = elevation.
+night_elevation = -6
+twilight_elevation = 0
+day_elevation = 6
+
+[weather]
+# Dim on cloudy days. The forecast comes from open-meteo.com, which receives
+# your location rounded to 0.01 degree (about 1 km).
+enabled = no
+# Percent less brightness at 100 % cloud cover. Thinner cloud dims
+# proportionally less, and the effect fades out towards night.
+strength = 20
+refresh_minutes = 60
+# Ignore a forecast that could not be refreshed for this long.
+max_age_hours = 12
+
+[ddc]
+# External monitors over DDC/CI, through ddcutil.
+enabled = yes
+# Empty = every monitor found. A number limits control to /dev/i2c-N.
+bus =
+sleep_multiplier = 1
+# Attempts per transaction when ddcutil reports an error.
+retries = 3
+# Identical writes per change. DDC/CI writes are unacknowledged, so on a
+# monitor that silently drops frames repetition is the only defence.
+repeats = 1
+settle = 0.2
+# ddcutil --syslog level; empty = do not pass the flag (ddcutil < 2.0).
+syslog = NEVER
+# MCCS version of the monitor (see "ddcutil detect"); empty = autodetect.
+mccs =
+skip_ddc_checks = yes
+# Some monitors restore their own brightness a few seconds after waking up.
+# yes = re-assert the level repeatedly during the first minute after wake.
+wake_burst = no
+# Re-write the level every N minutes while dimmed; 0 = never.
+refresh_minutes = 0
+# The level the monitor falls back to on its own. Bursts and refreshes are
+# skipped whenever the target equals it.
+restore_level = 100
+
+[backlight]
+# Built-in laptop panels.
+enabled = yes
+# Name in /sys/class/backlight; empty = pick automatically.
+device =
+# auto picks the desktop's own interface when there is one, so its brightness
+# slider stays in sync: mutter (GNOME 49+), kde (Plasma 6), then logind.
+method = auto
+# yes = a change made with the brightness keys holds until the next phase.
+follow_manual = yes
+
+[tray]
+enabled = yes
+# Show the current percentage next to the icon (GNOME AppIndicator only).
+show_level = no
+# Pause durations offered in the menu, in minutes.
+pause_presets = 15, 30, 60, 120
