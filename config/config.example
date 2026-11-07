@@ -14,7 +14,7 @@ timezone =
 # it switches the backlight off and leaves a black screen.
 day = 100
 twilight = 75
-night = 30
+night = 1
 
 [schedule]
 # time      = ramps of +/- margin_minutes around sunrise and sunset

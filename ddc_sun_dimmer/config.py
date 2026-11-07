@@ -65,7 +65,7 @@ class Config:
     # [levels]
     day: int = 100
     twilight: int = 75
-    night: int = 30
+    night: int = 1
     # [schedule]
     mode: str = "time"                 # "time" or "elevation"
     smooth: bool = True
