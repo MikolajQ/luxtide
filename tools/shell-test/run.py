@@ -2,7 +2,8 @@
 
 Checks what unit tests cannot: name watching, signal delivery and timing
 through a real bus. The shell appears after the daemon (as at login with
-early start), two kinds of key presses, then the shell restarts.
+early start) and starts from the brightness the daemon saved for it, two
+kinds of key presses, then the shell restarts.
 
     make test-shell
     dbus-run-session -- python3 tools/shell-test/run.py . [INITIAL_SCALE]
@@ -21,10 +22,11 @@ import tempfile
 repo = pathlib.Path(sys.argv[1])
 here = pathlib.Path(__file__).parent
 tmp = pathlib.Path(tempfile.mkdtemp())
-for name in ("config", "state", "cache", "run"):
+for name in ("config", "state", "cache", "run", "data"):
     (tmp / name).mkdir()
 os.environ.update(XDG_CONFIG_HOME=str(tmp / "config"), XDG_STATE_HOME=str(tmp / "state"),
-                  XDG_CACHE_HOME=str(tmp / "cache"), XDG_RUNTIME_DIR=str(tmp / "run"))
+                  XDG_CACHE_HOME=str(tmp / "cache"), XDG_RUNTIME_DIR=str(tmp / "run"),
+                  XDG_DATA_HOME=str(tmp / "data"))
 (tmp / "config" / "luxtide").mkdir()
 (tmp / "config" / "luxtide" / "config.ini").write_text(
     "[location]\nlatitude = 50.0614\nlongitude = 19.9366\n"
@@ -45,7 +47,19 @@ brightness = bl / "brightness"
 sys.path.insert(0, str(repo))
 from gi.repository import Gio, GLib  # noqa: E402
 from luxtide import displays  # noqa: E402
+from luxtide.backends import shell_state  # noqa: E402
 from luxtide.daemon import Daemon  # noqa: E402
+
+initial = float(sys.argv[2]) if len(sys.argv) > 2 else 0.7
+# What the shell saved last session; the daemon presets it before the shell
+# starts. On a machine running GNOME the real shell would count as already
+# running, so the check is replaced: here the daemon comes first, as at login.
+saved = tmp / "data" / "gnome-shell" / "brightnesses"
+saved.parent.mkdir()
+saved.write_bytes(GLib.Variant("a(sssssd)", [
+    ("BOE", "0x0b0e", "0x00000000", "default", "eDP-1", initial),
+    ("DEL", "0xa1b2", "ABC123", "default", "DP-1", 0.8)]).get_data_as_bytes().get_data())
+shell_state.shell_running = lambda proc="/proc", uid=None: False
 
 orig_c, orig_b = displays.list_connectors, displays.list_backlights
 displays.list_connectors = lambda root=tmp / "drm": orig_c(root)
@@ -83,9 +97,13 @@ def manual():
     return next(iter(daemon.status()["outputs"]))["manual"]
 
 
-initial = float(sys.argv[2]) if len(sys.argv) > 2 else 0.7
+def start_panel():
+    return float((bl / "brightness.start").read_text())
+
+
 steps = [
-    (1.0, lambda: start_shell(initial)),
+    (1.0, lambda: start_shell("saved")),
+    (2.0, lambda: expect("the shell started at our level, no flash", start_panel(), 0.30)),
     (3.0, lambda: expect("level after the shell appeared", panel(), 0.30)),
     (3.5, lambda: press(-1)),
     (3.6, lambda: expect("one press down, 0.1 s later: our step 30 -> 25", panel(), 0.25)),

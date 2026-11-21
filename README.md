@@ -285,6 +285,13 @@ so, and each press of brightness down lowers that limit by 5 %. GNOME's own auto
 target from the light sensor, so on laptops with one Luxtide turns it off and
 the settings window says so.
 
+At login the shell sets the panel to its saved scale before any target can
+reach it, which at night could mean a second of 55 % instead of 15 %. The
+daemon starts before the shell, and while no shell of the user runs it
+writes the level it is about to set into the shell's saved state
+(`~/.local/share/gnome-shell/brightnesses`, the internal panel's entry only),
+so the panel comes up where it will stay.
+
 GNOME and Plasma report the brightness keys as they are pressed. Luxtide
 replaces the desktop's 5 % with its own step from the level on screen and
 holds the result until the next phase; the desktop's step may show for a

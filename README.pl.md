@@ -223,6 +223,11 @@ krok pulpitu (5 %) własnym i trzyma wynik do następnej fazy dnia. Zasobnik
 i okno ustawień pokazują wtedy ten poziom jako ręczny, z *Back to schedule*. Zmiana
 w czasie bezczynności to przygaszanie pulpitu, którego Luxtide nie rusza.
 W GNOME wskaźnik na ekranie pokazuje skalę powłoki, a nie faktyczną jasność.
+Przy logowaniu powłoka GNOME ustawia ekran na swoją zapamiętaną skalę, zanim
+dostanie poziom od Luxtide; w nocy mogłoby to być na moment 55 % zamiast 15 %.
+Luxtide startuje przed powłoką i, póki ta nie działa, wpisuje w jej zapisany
+stan (`~/.local/share/gnome-shell/brightnesses`, tylko wpis wbudowanego
+ekranu) poziom, który zaraz ustawi, więc ekran od razu startuje właściwie.
 Pełny opis w [wersji angielskiej](README.md#laptops).
 
 > Obsługa laptopów jest przetestowana na symulowanych urządzeniach i kilku

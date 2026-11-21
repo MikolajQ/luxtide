@@ -4,13 +4,25 @@ Owns org.gnome.Shell.Brightness and org.gnome.Mutter.DisplayConfig on the
 session bus and writes the panel to a fake sysfs file. A control interface
 presses keys: test.Press(i direction).
 
-    python3 fake_shell.py SYSFS_BRIGHTNESS_FILE INITIAL_SCALE
+    python3 fake_shell.py SYSFS_BRIGHTNESS_FILE INITIAL_SCALE|saved
+
+"saved" reads the scale of eDP-1 from $XDG_DATA_HOME/gnome-shell/brightnesses,
+as the shell does. The panel it starts at goes to SYSFS_BRIGHTNESS_FILE.start.
 """
+import os
 import sys
 
 from gi.repository import Gio, GLib
 
-path, scale = sys.argv[1], float(sys.argv[2])
+path = sys.argv[1]
+if sys.argv[2] == "saved":
+    saved = os.path.join(os.environ["XDG_DATA_HOME"], "gnome-shell", "brightnesses")
+    with open(saved, "rb") as handle:
+        entries = GLib.Variant.new_from_bytes(GLib.VariantType("a(sssssd)"),
+                                              GLib.Bytes.new(handle.read()), False).unpack()
+    scale = next(entry[5] for entry in entries if entry[4] == "eDP-1")
+else:
+    scale = float(sys.argv[2])
 LOW, HIGH = 4000, 400000
 state = {"scale": scale, "target": -1.0, "dim": False}
 
@@ -80,6 +92,8 @@ bus.register_object("/org/gnome/Shell/Brightness", node.interfaces[0], method, p
 bus.register_object("/org/gnome/Mutter/DisplayConfig", node.interfaces[1], method, prop, None)
 bus.register_object("/test", node.interfaces[2], method, prop, None)
 sync()          # what the shell does at start: the saved scale
+with open(path + ".start", "w") as handle:
+    handle.write(f"{scale}\n")
 for name in ("org.gnome.Mutter.DisplayConfig", "org.gnome.Shell.Brightness", "test.Shell"):
     Gio.bus_own_name_on_connection(bus, name, Gio.BusNameOwnerFlags.NONE, None, None)
 print("fake shell up", flush=True)

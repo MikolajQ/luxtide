@@ -20,7 +20,9 @@ from gi.repository import Gio, GLib
 from . import (BUS_NAME, INTERFACE, OBJECT_PATH, __version__, clamp_level,
                config as config_module, displays, locate, paths, policy, sdnotify,
                weather)
-from .backends.backlight import DESKTOP_NAMES, BacklightActuator, _Bus, session_idle_ms
+from .backends import shell_state
+from .backends.backlight import (DESKTOP_NAMES, BacklightActuator, _Bus, _ScaleStore,
+                                 session_idle_ms)
 from .backends.ddc import DdcActuator
 from .curve import Schedule
 from .outputs import Output
@@ -403,6 +405,26 @@ class Daemon:
         until = policy.resolve_until(policy.NEXT_PHASE, time.time(), self.schedule)
         output.hold_manual(level, until)
         self.tick()
+
+    def _preset_shell(self):
+        """Have GNOME Shell start the panel at our level instead of its own
+        saved one (see backends/shell_state). Only before the shell runs."""
+        cfg = self.cfg
+        if (self.dry_run or self.schedule is None or not cfg.backlight_enabled
+                or cfg.backlight_method not in ("auto", "gnome-shell")):
+            return
+        display = cfg.display("internal")
+        if not display.enabled:
+            return
+        device = displays.pick_backlight(displays.list_backlights(), cfg.backlight_device)
+        if device is None or device.connector is None:
+            return
+        level = max(display.minimum, min(display.maximum, self.level_now() + display.offset))
+        scale = shell_state.preset(device.connector.short, level)
+        if scale is None:
+            return
+        _ScaleStore().save(device.name, scale)
+        log.info("GNOME Shell will start %s at %.0f %%", device.name, scale * 100)
 
     # --- GNOME's own automatic brightness ------------------------------------
 
@@ -1013,6 +1035,7 @@ class Daemon:
             log.info("already running, nothing to do")
             sdnotify.ready()                # a clean exit, not a failed start
             return 0
+        self._preset_shell()                # before the desktop may start
         self._export()
         sdnotify.ready()                    # on a laptop the desktop waited for this
         self.tick()
