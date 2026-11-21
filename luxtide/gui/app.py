@@ -6,6 +6,7 @@ moment after the last edit and the daemon reloads it by itself.
 
 import copy
 import datetime as dt
+import os
 import shutil
 import sys
 import time
@@ -150,7 +151,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
             self.banner_text.set_text(f"The unreadable file was kept as {backup.name}.")
         try:
             config_module.save(self.cfg, path)
-            self.path_label.set_text(f"Saved to {path}")
+            self.path_label.set_text(f"Saved to {short_path(path)}")
         except OSError as error:
             self.error_label.set_text(f"Could not save: {error}")
         return False
@@ -199,7 +200,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self._fill()
         self.model_dirty = True
         self.area.queue_draw()
-        self.path_label.set_text(f"Reloaded {path}: changed outside this window")
+        self.path_label.set_text(f"Reloaded {short_path(path)}: changed outside this window")
         return False
 
     # --- layout ----------------------------------------------------------------
@@ -1228,7 +1229,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.presets_entry.set_text(", ".join(str(p) for p in c.tray_pause_presets))
         self.autostart_switch.set_active(autostart.is_enabled())
         self._set_date(self.date)
-        self.path_label.set_text(str(c.source or paths.config_file()))
+        self.path_label.set_text(short_path(c.source or paths.config_file()))
         self._display_keys = None
         self._loading = False
         self._update_sensitivity()
@@ -1371,6 +1372,15 @@ class PauseWindow(Gtk.ApplicationWindow):
         self.close()
 
 
+def short_path(path):
+    """A path with the home directory written as ~, as people read it."""
+    home = os.path.expanduser("~")
+    text = str(path)
+    if home not in ("", "/") and (text == home or text.startswith(home + os.sep)):
+        return "~" + text[len(home):]
+    return text
+
+
 def save_screenshot(widget, path):
     """Render a widget to PNG (used to check and document the layout)."""
     width, height = widget.get_width(), widget.get_height()
@@ -1431,7 +1441,8 @@ class App(Gtk.Application):
                 save_screenshot(dialog.get_child() if dialog else self.window.content, path)
                 self.quit()
                 return False
-            GLib.timeout_add(1500, shoot)
+            # The map needs time for its tiles to arrive.
+            GLib.timeout_add(6000 if "--locate" in args else 1500, shoot)
         return 0
 
     def _expanders(self, widget):

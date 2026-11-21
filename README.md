@@ -1,35 +1,89 @@
 # Luxtide
 
-Automatic screen brightness that follows the sun: external monitors over DDC/CI, laptop
-panels through their backlight. Dims through dusk, brightens through dawn,
-optionally a little less on cloudy days, and stays out of the way when you
-set something by hand.
+**English** · [Polski](README.pl.md)
 
-- **No setup to start.** Without coordinates it uses the reference city of
-  your time zone. Sun positions are computed locally, with no network.
-- **One click to be precise.** *Find my location…* uses the desktop's
-  location service, a town search or a map; laptops can keep it up to date.
-- **Ramps that look even.** Interpolation happens in a compressed space,
-  because perceived brightness grows far more slowly than light output. A
-  ramp that is linear in brightness units barely changes for most of its
-  length and then collapses at the end.
-- **Two schedules.** Ramps of ±N minutes around sunrise and sunset, or
-  brightness as a function of the sun's elevation. The elevation schedule
-  adapts to the season by itself and also works inside the polar circles.
-- **Weather.** An optional cloud-cover correction from an
-  [Open-Meteo](https://open-meteo.com) forecast, for example 20 % less light
-  under full overcast. It fades out towards night.
-- **Manual control that sticks.** A level set by hand holds until the next
-  phase (the start or end of a ramp). A pause can last any length of time.
-  On laptops the brightness keys count as a manual setting, and on GNOME
-  and Plasma they move in Luxtide's own steps, fine near the bottom.
-- **Tray icon, settings window, command line.** All three use the same
-  D-Bus API.
-- **Built for unreliable monitors.** Redundant writes, re-assertion after
-  wake-up, and back-off when a monitor stops answering. See
-  [Why so many writes?](#why-so-many-writes)
+Screen brightness that follows the sun, for Linux. Luxtide dims your
+displays through dusk and brightens them through dawn: external monitors
+over DDC/CI, laptop panels through their backlight, both at once if you have
+both. It can take a little light off on cloudy days, and it steps aside
+whenever you set the brightness yourself.
 
-![Settings window](docs/settings.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
+  <img alt="The settings window: today's brightness curve with the sun's ramps and hourly cloud cover, and the day, twilight and night levels" src="docs/screenshots/overview-light.png" width="780">
+</picture>
+
+## At a glance
+
+| | |
+|---|---|
+| **Follows the sun** | Ramps around sunrise and sunset, or brightness as a function of the sun's elevation, which adapts to the season by itself and works inside the polar circles. Sun positions are computed locally. |
+| **Looks even** | Ramps are shaped for the eye, not for the hardware: a geometric curve by default, so dusk does not sit bright for an hour and then collapse. |
+| **Weather** | Optional: up to 20 % less light under full overcast (adjustable), from an [Open-Meteo](https://open-meteo.com) forecast. Fades out towards night. |
+| **Monitors and laptops** | External monitors over DDC/CI with `ddcutil`; laptop panels through GNOME, KDE Plasma or logind, so the desktop's slider and keys keep working. No root. |
+| **You stay in charge** | A level you set holds until the next phase. Pause for any time or until a time of day. On GNOME and Plasma the brightness keys move in Luxtide's own, finer steps. |
+| **Three ways to use it** | A tray icon, a GTK 4 settings window with a curve you can drag, and the `luxtide` / `dim` commands, all over one D-Bus API. |
+| **Location in one click** | The desktop's location service, a town search or a map. Without any, the reference city of your time zone. |
+| **Starts with the session** | An XDG login entry for every desktop, with or without systemd. |
+| **Built for flaky monitors** | Repeated writes, re-assertion after wake-up, back-off when a monitor stops answering. See [Why so many writes?](#why-so-many-writes) |
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Find my location**: the desktop's location service, a search or a click on
+the map (OpenStreetMap).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/location-dark.png">
+  <img alt="The location window with a search box and a map" src="docs/screenshots/location-light.png">
+</picture>
+
+</td>
+<td width="50%" valign="top">
+
+**What it decided and why**, from the command line:
+
+```text
+$ luxtide status
+Brightness 15 %  (automatic, night)
+  next      16 % at 06:06
+  sun       rise 07:02, set 15:49
+  location  50.0614, 19.9366 (place search: Kraków)
+  weather   cloud cover 100 %, +0 % (updated 18:06)
+  display   DEL DELL P2422H (DP-1): 15 %
+            [ddcutil on /dev/i2c-7]
+  display   Built-in display (amdgpu_bl1): 15 %
+            [amdgpu_bl1 via logind]
+```
+
+</td>
+</tr>
+</table>
+
+<details>
+<summary>All settings</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
+  <img alt="Every section of the settings window expanded: levels, transition, weather, location, displays, DDC/CI monitors, laptop backlight, general" src="docs/screenshots/settings-light.png" width="780">
+</picture>
+
+</details>
+
+## Quick start
+
+```sh
+yay -S luxtide-git        # Arch Linux and derivatives, from the AUR
+luxtide autostart         # start now; later logins start it by themselves
+luxtide-settings          # set your location and levels
+```
+
+Elsewhere: install the [requirements](#requirements), then
+`make install-user` from a checkout. `luxtide status` shows what it decided,
+`luxtide displays` what it found.
 
 ## Requirements
 
@@ -70,7 +124,7 @@ Luxtide was called ddc-sun-dimmer until version 2.0. On the first start it
 copies the old settings and state from `~/.config/ddc-sun-dimmer` and its
 siblings, leaving the originals in place. `make install-user` removes the
 old commands, unit and login entry (a login entry that was turned off stays
-off), and the package replaces the old package.
+off), and the packages conflict with the old one, so installing removes it.
 
 ### Starting at login
 
