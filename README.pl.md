@@ -219,7 +219,8 @@ wskaźnik na ekranie i przygaszanie przy bezczynności pozostają spójne:
 | pozostałe (sway, Hyprland, niri, XFCE…) | logind `Session.SetBrightness` |
 
 GNOME i Plasma zgłaszają naciśnięcia klawiszy jasności. Luxtide zastępuje
-krok pulpitu (5 %) własnym i trzyma wynik do następnej fazy dnia. Zmiana
+krok pulpitu (5 %) własnym i trzyma wynik do następnej fazy dnia. Zasobnik
+i okno ustawień pokazują wtedy ten poziom jako ręczny, z *Back to schedule*. Zmiana
 w czasie bezczynności to przygaszanie pulpitu, którego Luxtide nie rusza.
 W GNOME wskaźnik na ekranie pokazuje skalę powłoki, a nie faktyczną jasność.
 Pełny opis w [wersji angielskiej](README.md#laptops).

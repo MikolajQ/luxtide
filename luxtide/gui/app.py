@@ -368,17 +368,22 @@ class SettingsWindow(Gtk.ApplicationWindow):
             self.resume_button.set_visible(False)
             self.pause_button.set_sensitive(self.daemon_up)
             return
-        self.level_label.set_text(f"{s['level']} %")
         mode, until = s["mode"], s.get("until", 0)
+        keys = mode == "auto" and s.get("keys_level", -1) >= 0
+        self.level_label.set_text(f"{s['keys_level'] if keys else s['level']} %")
         texts = {"auto": "Following the sun",
                  "override": f"Manual until {clock(until)}" if until else "Manual",
                  "paused": f"Paused until {clock(until)}" if until else "Paused until resumed",
                  "preview": "Trying a level"}
+        if keys:
+            until = s.get("keys_until", 0)
+            what = "Brightness keys" if s.get("keys_all") else "Built-in display, brightness keys"
+            texts["auto"] = f"{what} until {clock(until)}" if until else what
         self.mode_label.set_text(texts.get(mode, mode))
         details = []
-        if mode == "auto" and s.get("next_change"):
+        if mode == "auto" and s.get("next_change") and not keys:
             details.append(f"Next {s['next_level']} % at {clock(s['next_change'])}")
-        elif mode != "auto":
+        elif mode != "auto" or keys:
             details.append(f"Schedule says {s.get('scheduled')} %")
         if s.get("sunrise"):
             details.append(f"sunrise {clock(s['sunrise'])}, sunset {clock(s['sunset'])}")
@@ -386,7 +391,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
             change = round((s.get("factor", 1) - 1) * 100)
             details.append(f"cloud {s['cloud']:.0f} %" + (f" ({change:+d} %)" if change else ""))
         self.detail_label.set_text(" · ".join(details))
-        self.resume_button.set_visible(mode in ("override", "paused"))
+        self.resume_button.set_visible(mode in ("override", "paused") or keys)
         self.pause_button.set_sensitive(True)
 
     # --- pause popover -----------------------------------------------------------

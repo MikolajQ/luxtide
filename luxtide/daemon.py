@@ -698,9 +698,22 @@ class Daemon:
                 "target": -1 if o.last_target is None else o.last_target,
                 "state": {True: "ok", False: "failed", None: "unknown"}[o.ok],
                 "manual": o.manual_hold.level if o.manual_hold else -1,
+                "manual_until": int(o.manual_hold.until or 0) if o.manual_hold else 0,
                 "note": getattr(o.actuator, "note", "") or "",
             })
         s["outputs"] = outputs
+        # A level set with the brightness keys holds on that display only, so
+        # the decided level above is not what the screen shows.
+        enabled = [o for o in self.outputs.values() if o.display.enabled]
+        held = [o for o in enabled if o.manual_hold is not None]
+        if held and d is not None:
+            s["keys_level"] = held[0].manual_hold.level
+            s["keys_until"] = int(held[0].manual_hold.until or 0)
+            s["keys_all"] = len(held) == len(enabled)
+        else:
+            s["keys_level"], s["keys_until"], s["keys_all"] = -1, 0, False
+        if d is not None:
+            s["shown"] = self._shown_level()
         s["step"] = cfg.step
         # GNOME's sensor-driven brightness is kept off while we drive the panel.
         s["gnome_ambient_off"] = bool(self.light_sensor) and self._uses_shell()

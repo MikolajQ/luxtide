@@ -288,7 +288,8 @@ the settings window says so.
 GNOME and Plasma report the brightness keys as they are pressed. Luxtide
 replaces the desktop's 5 % with its own step from the level on screen and
 holds the result until the next phase; the desktop's step may show for a
-moment first. Elsewhere the level is read back every few seconds, so the keys
+moment first. The tray and the settings window then show the held level as
+manual, with *Back to schedule*. Elsewhere the level is read back every few seconds, so the keys
 are respected with the desktop's step. A change made while the session is
 idle is the desktop's own idle dimming, and the daemon leaves it alone. On a
 laptop with an external monitor, both are controlled at once, each with its

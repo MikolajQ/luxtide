@@ -225,6 +225,35 @@ class TrayMenuUpdates(unittest.TestCase):
                          "weather-clear-night-symbolic")
         self.assertEqual(tray.icon_name(dict(STATUS, phase="day")),
                          "weather-few-clouds-symbolic")
+        self.assertEqual(tray.icon_name(STATUS), "daytime-sunset-symbolic")
+        self.assertEqual(tray.icon_name(dict(STATUS, phase="dawn")), "daytime-sunrise-symbolic")
+        self.assertEqual(tray.icon_name(dict(STATUS, mode="override")),
+                         "display-brightness-symbolic")
+
+    def test_brightness_keys_show_in_the_tray(self):
+        until = 1_800_001_000
+        keys = dict(STATUS, shown=51, keys_level=51, keys_until=until, keys_all=True)
+        root = tray.build_menu(keys, Recorder(), {})
+        texts = labels(root)
+        self.assertEqual(texts[0], f"Manual 51 % until {tray.clock(until)}")
+        self.assertIn("Back to schedule", texts)
+        self.assertFalse(any(t.startswith("Next:") for t in texts))
+        self.assertFalse(any(t.startswith("Other displays") for t in texts))
+        self.assertEqual(tray.icon_name(keys), "display-brightness-symbolic")
+        self.assertEqual(tray.shown_level(keys), 51)
+        # A laptop with an external monitor: only the panel is held.
+        texts = labels(tray.build_menu(dict(keys, keys_all=False), Recorder(), {}))
+        self.assertIn("Other displays: 37 %", texts)
+        # Paused, the pause is what the menu talks about.
+        texts = labels(tray.build_menu(dict(keys, mode="paused"), Recorder(), {}))
+        self.assertTrue(texts[0].startswith("Paused at 37 %"))
+
+    def test_keys_keep_the_menu_shape(self):
+        plain = tray.MenuModel()
+        plain.update(tray.build_menu(STATUS, Recorder(), {}))
+        keys = dict(STATUS, shown=51, keys_level=51, keys_until=0, keys_all=False)
+        reshaped, _, _ = plain.update(tray.build_menu(keys, Recorder(), {}))
+        self.assertFalse(reshaped)
 
 
 class DaemonLogging(unittest.TestCase):

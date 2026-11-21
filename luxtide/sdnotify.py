@@ -45,7 +45,8 @@ def ready():
 
 def has_backlight(root=BACKLIGHT_ROOT):
     try:
-        return any(True for _ in os.scandir(root))
+        with os.scandir(root) as entries:
+            return any(True for _ in entries)
     except OSError:
         return False
 

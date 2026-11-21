@@ -136,12 +136,29 @@ def duration_label(minutes):
     return f"{hours} h {rest} min"
 
 
+def shown_level(status):
+    """The level on screen: one set with the brightness keys wins."""
+    return status.get("shown", status.get("level"))
+
+
+def held_by_keys(status):
+    """Is a level from the brightness keys on screen instead of the schedule?"""
+    return status.get("mode") == "auto" and status.get("keys_level", -1) >= 0
+
+
+def is_manual(status):
+    return status.get("mode") == "override" or held_by_keys(status)
+
+
 def headline(status):
     if status.get("config_error"):
         return "Settings error"
     if "level" not in status:
         return "Starting…"
     level, mode, until = status["level"], status["mode"], status.get("until", 0)
+    if held_by_keys(status):
+        level, until = status["keys_level"], status.get("keys_until", 0)
+        return f"Manual {level} % until {clock(until)}" if until else f"Manual {level} %"
     if mode == "paused":
         return (f"Paused at {level} % until {clock(until)}" if until
                 else f"Paused at {level} %")
@@ -162,9 +179,13 @@ def detail_items(status):
         return [("error", status["config_error"])]
     items = []
     next_line = ""
-    if status.get("mode") == "auto" and status.get("next_change"):
+    if status.get("mode") == "auto" and status.get("next_change") and not held_by_keys(status):
         next_line = f"Next: {status['next_level']} % at {clock(status['next_change'])}"
     items.append(("next", next_line))
+    others = ""
+    if held_by_keys(status) and not status.get("keys_all"):
+        others = f"Other displays: {status['level']} %"
+    items.append(("others", others))
     weather_line = ""
     if status.get("weather_enabled") and status.get("weather_blocked"):
         weather_line = "Weather off: set your location"
@@ -195,6 +216,8 @@ def icon_name(status):
     mode = status.get("mode")
     if mode == "paused":
         return "media-playback-pause-symbolic"
+    if is_manual(status):
+        return "display-brightness-symbolic"
     phase = status.get("phase")
     if phase == "night":
         return "weather-clear-night-symbolic"
@@ -202,6 +225,10 @@ def icon_name(status):
         if status.get("factor", 1.0) < 0.95:
             return "weather-few-clouds-symbolic"
         return "weather-clear-symbolic"
+    if phase == "dawn":
+        return "daytime-sunrise-symbolic"
+    if phase == "dusk":
+        return "daytime-sunset-symbolic"
     return "display-brightness-symbolic"
 
 
@@ -261,12 +288,13 @@ def build_menu(status, actions, prefs):
         return Item(children=items)
 
     mode = status.get("mode")
-    level = status.get("level")
+    level = shown_level(status)
     items.append(separator("sep-top"))
 
     brightness = [Item(f"{preset} %", lambda p=preset: a.set_level(p, policy.NEXT_PHASE),
                        toggle="radio", key=f"level-{preset}",
-                       checked=(mode in ("override", "paused") and level == preset))
+                       checked=((mode in ("override", "paused") or held_by_keys(status))
+                                and level == preset))
                   for preset in LEVEL_PRESETS]
     brightness += [separator("sep-step"),
                    Item("Brighter", lambda: a.step(1),
@@ -277,7 +305,7 @@ def build_menu(status, actions, prefs):
 
     items.append(Item("Set your location…", a.open_locate, key="locate",
                       visible=status.get("location_source") == "timezone"))
-    items.append(Item("Back to schedule", a.resume, key="back", visible=mode == "override"))
+    items.append(Item("Back to schedule", a.resume, key="back", visible=is_manual(status)))
     items.append(Item("Resume now", a.resume, key="resume", visible=mode == "paused"))
     until = status.get("until", 0) if mode == "paused" else 0
     items.append(Item(f"Extend pause by {EXTEND_MINUTES} min",
@@ -528,7 +556,8 @@ class Tray:
         if tooltip != self._tooltip:
             self._tooltip = tooltip
             self._emit(ITEM_PATH, "org.kde.StatusNotifierItem", "NewToolTip")
-        label = f"{status['level']}%" if status.get("show_level") and "level" in status else ""
+        label = (f"{shown_level(status)}%" if status.get("show_level") and "level" in status
+                 else "")
         if label != self._label:
             self._label = label
             self._emit(ITEM_PATH, "org.kde.StatusNotifierItem", "XAyatanaNewLabel",
