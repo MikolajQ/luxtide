@@ -411,10 +411,22 @@ class GnomeShellMethod:
             log.debug("could not release the shell's target: %s", error)
 
 
+def owner_command(bus, name, proc="/proc"):
+    """The command name (comm) of the process that owns a bus name, or ""."""
+    try:
+        pid = bus.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                       "GetConnectionUnixProcessID", "(s)", (name,), "(u)")[0]
+        with open(os.path.join(proc, str(pid), "comm"), encoding="utf-8") as handle:
+            return handle.read().strip()
+    except Exception:
+        return ""
+
+
 class MutterMethod:
     name = "mutter"
     BUS = "org.gnome.Mutter.DisplayConfig"
     PATH = "/org/gnome/Mutter/DisplayConfig"
+    PROC = "/proc"
 
     def __init__(self, device, bus):
         self.device = device
@@ -425,6 +437,13 @@ class MutterMethod:
         return serial, pick_mutter_entry(entries, self.device)
 
     def available(self):
+        # Inside GNOME Shell, Mutter's interface comes up a quarter of a
+        # second before the shell's own (seen at login on GNOME 51). Writing
+        # through Mutter in between would move the shell's scale from outside,
+        # the very thing the gnome-shell method avoids, so wait for the shell.
+        # Mutter on its own (another compositor built on it) is fine.
+        if owner_command(self.bus, self.BUS, self.PROC) == "gnome-shell":
+            return False
         try:
             return self._entry()[1] is not None
         except Exception:

@@ -119,6 +119,8 @@ class FakeBus:
             raise RuntimeError(f"{method} refused")
         if method == "GetAll":
             return (self.properties[(path, args[0])],)
+        if method == "GetConnectionUnixProcessID":
+            return (getattr(self, "pids", {})[args[0]],)
         self.calls.append((name, path, method, args))
         return ()
 
@@ -151,6 +153,22 @@ class Actuators(unittest.TestCase):
         self.assertEqual(actuator.method.name, "mutter")
         self.assertEqual(session.calls[-1][2:], ("SetBacklight", (7, "eDP-1", 128)))
         self.assertEqual(actuator.read(), 50)
+
+    def test_mutter_waits_for_gnome_shell(self):
+        proc = self.fs.root / "proc"
+        (proc / "4242").mkdir(parents=True)
+        (proc / "4242" / "comm").write_text("gnome-shell\n")
+        session = self.mutter_bus()
+        session.pids = {backlight.MutterMethod.BUS: 4242}
+        system = FakeBus({}, owners={"org.freedesktop.login1"})
+        actuator = backlight.BacklightActuator(self.device, session_bus=session,
+                                               system_bus=system)
+        original = backlight.MutterMethod.PROC
+        backlight.MutterMethod.PROC = str(proc)
+        self.addCleanup(setattr, backlight.MutterMethod, "PROC", original)
+        self.assertEqual(actuator.select().name, "logind")
+        (proc / "4242" / "comm").write_text("gnome-kiosk\n")
+        self.assertEqual(actuator.select().name, "mutter")
 
     def test_falls_back_to_logind(self):
         session = self.mutter_bus(fail={"SetBacklight"})
