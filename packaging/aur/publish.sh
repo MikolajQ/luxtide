@@ -36,7 +36,10 @@ email=$(git -C "$root" config user.email)
 echo "AUR commits will be signed off as: $author <$email>"
 
 if [[ -d $work/.git ]]; then
-    git -C "$work" pull --ff-only --quiet
+    # A package not pushed yet has no master to pull.
+    if git -C "$work" ls-remote --exit-code --heads origin master >/dev/null; then
+        git -C "$work" pull --ff-only --quiet origin master
+    fi
 else
     mkdir -p "$(dirname "$work")"
     git clone "ssh://aur@aur.archlinux.org/$name.git" "$work"
