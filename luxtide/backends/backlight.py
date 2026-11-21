@@ -384,8 +384,12 @@ class GnomeShellMethod:
                 # One press gets our own step. Several in a row, a held key,
                 # keep the shell's: replacing them only once the key is let go
                 # would make the panel jump back from where the user stopped.
+                # Unless the shell's steps moved nothing (its scale at an end,
+                # near the bottom of the range): then there is nothing to keep
+                # and each press gets our step, or the presses would be lost.
+                moved = abs(after - before) > self.eps
                 handler(UserChange(clamp_level(after * 100), direction, presses,
-                                   keys and presses == 1))
+                                   keys and (presses == 1 or not moved)))
 
         def poll():
             pending = self._pending

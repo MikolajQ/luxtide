@@ -412,6 +412,16 @@ class GnomeShell(unittest.TestCase):
         scheduler.run()
         self.assertEqual(changes, [backlight.UserChange(100, 1, 1, True)])
 
+    def test_presses_at_the_bottom_of_the_scale_are_not_lost(self):
+        changes, scheduler = self.watched(0.0, 3)          # the scale already at 0
+        self.shell_writes(0.03)
+        for _ in range(2):                                  # two quick presses down
+            self.bus.emit(backlight.GnomeShellMethod.PATH, "BrightnessChanged")
+        scheduler.step()
+        self.clock.now += 0.31
+        scheduler.run()
+        self.assertEqual(changes, [backlight.UserChange(3, -1, 2, True)])
+
     def test_signals_before_our_first_target_are_not_reported(self):
         changes = []
         self.actuator.select()
