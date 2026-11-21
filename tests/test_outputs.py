@@ -3,8 +3,8 @@ import time
 import unittest
 
 import helpers  # noqa: F401
-from ddc_sun_dimmer import outputs
-from ddc_sun_dimmer.config import DdcSettings, DisplaySettings
+from luxtide import outputs
+from luxtide.config import DdcSettings, DisplaySettings
 
 
 class FakeActuator:
@@ -137,24 +137,30 @@ class WakeUps(unittest.TestCase):
         self.assertEqual(len(output.actuator.writes), 2)
         output.close()
 
-    def test_no_burst_at_restore_level(self):
+    def test_burst_at_restore_level_too(self):
+        # A monitor left dim overnight need not come back at its restore level.
         output, scheduler, clock = make(settings=DdcSettings(wake_burst=True,
                                                              restore_level=100))
         output.on_wake(lambda: 100)
+        wait(output.actuator, 1)
+        self.assertEqual(output.actuator.writes, [(100, 1)])
+        self.assertEqual([s for s, _ in scheduler.timeouts], list(outputs.WAKE_BURST[1:]))
         for _, callback in scheduler.timeouts:
             callback()
-        output.ensure(100, clock())
-        wait(output.actuator, 1)
-        self.assertEqual(output.actuator.writes, [])
-        self.assertEqual(output.applied, 100)
+            wait(output.actuator, len(output.actuator.writes) + 1)
+        self.assertEqual(len(output.actuator.writes), len(outputs.WAKE_BURST))
         output.close()
 
-    def test_start_up_writes_regardless(self):
-        output, _, clock = make(settings=DdcSettings(restore_level=100))
-        output.on_wake(lambda: 100, assume_restored=False)
+    def test_start_up_writes_at_restore_level_without_burst(self):
+        output, scheduler, clock = make(settings=DdcSettings(restore_level=100))
+        output.on_wake(lambda: 100)
         output.ensure(100, clock())
         wait(output.actuator, 1)
         self.assertEqual(output.actuator.writes, [(100, None)])
+        self.assertEqual([s for s, _ in scheduler.timeouts], list(outputs.WAKE_REASSERT))
+        scheduler.timeouts[0][1]()
+        wait(output.actuator, 2)
+        self.assertEqual(output.actuator.writes, [(100, None), (100, 1)])
         output.close()
 
     def test_sleep_cancels_burst(self):
@@ -206,6 +212,51 @@ class BrightnessKeys(unittest.TestCase):
     def test_hold_overrides_target(self):
         self.output.hold_manual(35, time.time() + 600)
         self.assertEqual(self.output.target(90), 35)
+
+
+class ReportedChanges(unittest.TestCase):
+    """Desktops that report the user's changes themselves (GNOME Shell)."""
+
+    def setUp(self):
+        actuator = FakeActuator()
+        actuator.kind = "backlight"
+        actuator.readable = True
+        actuator.events = True
+        self.output, _, self.clock = make(actuator=actuator, settings=None)
+        self.output.settings = None
+        self.output.ensure(50, self.clock())
+        wait(actuator, 1)
+
+    def change(self, level, direction, presses=1, keys=True):
+        from luxtide.backends.backlight import UserChange
+        return self.output.user_change(UserChange(level, direction, presses, keys), 10)
+
+    def test_keys_use_our_step_from_the_level_shown(self):
+        self.assertEqual(self.change(45, -1), 45)
+        self.output.hold_manual(45, None)
+        self.assertEqual(self.change(40, -1, presses=2), 37)
+
+    def test_slider_is_taken_as_it_is(self):
+        self.assertEqual(self.change(23, -1, keys=False), 23)
+
+    def test_unchanged_level_is_written_again(self):
+        self.output.hold_manual(1, None)
+        self.assertEqual(self.change(0, -1), 1)
+        self.assertIsNone(self.output.applied)
+        self.output.ensure(50, self.clock())
+        wait(self.output.actuator, 2)
+        self.assertEqual(self.output.actuator.writes[-1][0], 1)
+
+    def test_no_polling_for_keys(self):
+        self.output.actuator.value = 20
+        self.clock.now += 60
+        self.assertIsNone(self.output.check_manual(0))
+
+    def test_writes_while_the_panel_is_off(self):
+        self.output.awake = False
+        self.output.ensure(30, self.clock())
+        wait(self.output.actuator, 2)
+        self.assertEqual(self.output.actuator.writes[-1][0], 30)
 
 
 if __name__ == "__main__":

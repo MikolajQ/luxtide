@@ -103,7 +103,7 @@ def fetch(latitude, longitude, timeout=20, opener=urllib.request.urlopen):
     """Download a fresh forecast. Blocking; call it off the main loop."""
     request = urllib.request.Request(
         build_url(latitude, longitude),
-        headers={"User-Agent": f"ddc-sun-dimmer/{__version__}"})
+        headers={"User-Agent": f"luxtide/{__version__}"})
     try:
         with opener(request, timeout=timeout) as response:
             data = json.load(response)

@@ -7,7 +7,7 @@ import pathlib
 import urllib.parse
 
 import helpers  # noqa: F401
-from ddc_sun_dimmer import weather
+from luxtide import weather
 
 SAMPLE = {"hourly": {"time": [1000, 4600, 8200, 11800],
                      "cloud_cover": [0, 100, None, 40]}}
@@ -62,7 +62,7 @@ class Forecasts(unittest.TestCase):
         fc = weather.fetch(50.06, 19.94, opener=opener)
         self.assertEqual(len(fc.times), 3)
         self.assertIn("api.open-meteo.com", seen["url"])
-        self.assertTrue(seen["agent"].startswith("ddc-sun-dimmer/"))
+        self.assertTrue(seen["agent"].startswith("luxtide/"))
 
         def failing(request, timeout):
             raise OSError("network down")

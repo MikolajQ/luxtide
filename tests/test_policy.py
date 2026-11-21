@@ -2,7 +2,7 @@ import datetime as dt
 import unittest
 
 from helpers import make_config
-from ddc_sun_dimmer import curve, policy, weather
+from luxtide import curve, policy, weather
 
 
 class Weather(unittest.TestCase):

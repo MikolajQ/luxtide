@@ -1,13 +1,24 @@
-# ddc-sun-dimmer settings. The settings window rewrites this file; editing it
+# Luxtide settings. The settings window rewrites this file; editing it
 # by hand works too, and the daemon picks up every change within a second.
 
 [location]
 # Decimal degrees, north and east positive. Leave both empty to use the
-# reference city of your time zone: rough, but it needs no setup.
+# reference city of your time zone: fine for the sun, useless for the
+# weather, which then stays off.
 latitude =
 longitude =
 # IANA name such as Europe/Warsaw. Empty = follow the system time zone.
 timezone =
+# yes = update the coordinates from the desktop's location service (GeoClue)
+# at start-up and when the network changes, for laptops that travel. Only
+# fixes within 3 km are taken, and only moves of 1 km or more are saved.
+follow = no
+# How the coordinates were found (manual, geoclue, search, map), the place
+# name, the accuracy in metres and when. For information only.
+method =
+place =
+accuracy = 0
+updated =
 
 [levels]
 # Brightness in percent, 1-100. Zero is refused on purpose: on some monitors
@@ -15,6 +26,10 @@ timezone =
 day = 100
 twilight = 75
 night = 1
+# One step of Brighter/Dimmer, of the scroll wheel over the tray icon and,
+# where the desktop reports them (GNOME 49+, Plasma 6), of the brightness
+# keys: this percentage of the current level, at least 1 point.
+step = 20
 
 [schedule]
 # time      = ramps of +/- margin_minutes around sunrise and sunset
@@ -65,8 +80,9 @@ skip_ddc_checks = yes
 wake_burst = no
 # Re-write the level every N minutes while dimmed; 0 = never.
 refresh_minutes = 0
-# The level the monitor falls back to on its own. Bursts and refreshes are
-# skipped whenever the target equals it.
+# The level the monitor falls back to on its own. Refreshes are skipped
+# whenever the target equals it; wake-up bursts are not, because a monitor
+# may also come back at the level it had before.
 restore_level = 100
 
 [backlight]
@@ -75,7 +91,8 @@ enabled = yes
 # Name in /sys/class/backlight; empty = pick automatically.
 device =
 # auto picks the desktop's own interface when there is one, so its brightness
-# slider stays in sync: mutter (GNOME 49+), kde (Plasma 6), then logind.
+# slider and keys keep working: gnome-shell or mutter (GNOME 49+),
+# kde (Plasma 6), then logind; sysfs needs write access.
 method = auto
 # yes = a change made with the brightness keys holds until the next phase.
 follow_manual = yes

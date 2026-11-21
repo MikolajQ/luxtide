@@ -132,7 +132,12 @@ class BacklightDevice:
     connector: Connector | None = None
 
     def read_raw(self):
-        for attribute in ("actual_brightness", "brightness"):
+        # "brightness" is what was last requested, by us or anyone else, in the
+        # units we write. "actual_brightness" is what the hardware reports, and
+        # on amdgpu panels with a non-linear scale it differs a lot (271694 for
+        # a requested 356440 of 400000), which would look like someone else
+        # changing the level.
+        for attribute in ("brightness", "actual_brightness"):
             value = _read(self.path / attribute)
             if value.isdigit():
                 return int(value)

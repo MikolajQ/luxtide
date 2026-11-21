@@ -11,6 +11,7 @@ import logging
 import threading
 import time
 
+from . import policy
 from .policy import Hold
 
 log = logging.getLogger(__name__)
@@ -143,7 +144,11 @@ class Output:
         if self.manual_hold is not None and self.manual_hold.expired(time.time()):
             log.info("%s: manual level %d%% expired", self.label, self.manual_hold.level)
             self.manual_hold = None
-        if not self.display.enabled or not self.awake or self.desktop_dimmed:
+        if not self.display.enabled or self.desktop_dimmed:
+            return
+        # A panel that is off ignores writes, or loses them when it comes
+        # back. A desktop that keeps the level itself (GNOME Shell) does not.
+        if not self.awake and not self.events:
             return
         target = self.target(level)
         self.last_target = target
@@ -197,12 +202,14 @@ class Output:
         self.awake = awake
         return "wake" if awake else "sleep"
 
-    def on_wake(self, level_now, assume_restored=True):
+    def on_wake(self, level_now):
         """The panel just lit up (or appeared, or the daemon just started).
 
-        After a real wake-up a monitor sits at its own restore level, so when
-        that is also the target there is nothing to write. At start-up or on a
-        new connection nothing is known, so the level is written regardless.
+        The level is re-asserted even when it equals the monitor's restore
+        level: a monitor does not reliably fall back to it. A SyncMaster
+        BX2231 left at 1 % overnight came up dim after a cold boot, swallowed
+        the single 100 % write sent while it was still settling on the new
+        signal, and stayed dim until the next manual change.
         """
         self.awake = True
         self.applied = None
@@ -214,9 +221,6 @@ class Output:
         level = level_now()
         if level is None:
             return
-        if assume_restored and self.restore_level is not None \
-                and self.target(level) == self.restore_level:
-            self.applied = self.restore_level
         offsets = WAKE_BURST if (self.settings and self.settings.wake_burst) else WAKE_REASSERT
         for offset in offsets:
             if offset == 0:
@@ -231,10 +235,7 @@ class Output:
         level = level_now()
         if level is None:
             return
-        target = self.target(level)
-        if self.restore_level is not None and target == self.restore_level:
-            return          # the monitor falls back to exactly what we want
-        self.submit(target, repeats=1, reason="wake")
+        self.submit(self.target(level), repeats=1, reason="wake")
 
     def on_sleep(self):
         self.awake = False
@@ -249,8 +250,60 @@ class Output:
     def close(self):
         self._cancel_bursts()
         self.worker.stop()
+        close = getattr(self.actuator, "close", None)
+        if close:
+            close()
 
     # --- brightness keys ---------------------------------------------------
+
+    @property
+    def events(self):
+        """The desktop reports user changes itself (GNOME Shell)."""
+        return getattr(self.actuator, "events", False)
+
+    def wants_fast_poll(self):
+        """Is there anything to notice soon by reading the panel?"""
+        if not self.actuator.readable:
+            return False
+        if self.events:
+            return not getattr(self.actuator.method, "verified", True)
+        return True
+
+    def verify(self, idle_ms):
+        """For desktops that report user changes: once our level is in place,
+        check that the desktop's model is what we think. True when the level
+        has to be written again."""
+        if not self.events or not self.awake or self.applied is None:
+            return False
+        if self.clock() - self.last_write < 1.0:
+            return False
+        queued, running = self.worker.snapshot()
+        if queued or running:
+            return False
+        idle = idle_ms() if callable(idle_ms) else idle_ms
+        if idle is not None and idle >= USER_ACTIVE_MS:
+            return False                  # the desktop may be dimming the panel
+        if self.actuator.check():
+            self.applied = None
+            return True
+        return False
+
+    def user_change(self, change, step):
+        """The desktop reported a change made by the user (a UserChange).
+        Returns the level to hold, or None. Key presses are replaced by
+        Luxtide's own step from the level we were showing; a slider is
+        taken as it is."""
+        if not change.direction:
+            return None
+        base = self.manual_hold.level if self.manual_hold is not None else self.last_target
+        if change.keys and base is not None:
+            level = policy.step_level(base, change.direction, step, change.presses)
+        else:
+            level = change.level
+        # The panel moved under us: write even when the level stays the same,
+        # say a press of "brighter" at 100 %.
+        self.applied = None
+        return level
 
     def check_manual(self, idle_ms):
         """Level the user set behind our back, or None.
@@ -258,7 +311,7 @@ class Output:
         Only for readable displays. A change while the user is away is the
         desktop's idle dimming, which we leave alone until they return.
         """
-        if not self.actuator.readable or not self.awake or self.applied is None:
+        if not self.actuator.readable or self.events or not self.awake or self.applied is None:
             return None
         now = self.clock()
         if now - self.last_write < QUIET_AFTER_WRITE or now - self.wake_time < QUIET_AFTER_WAKE:

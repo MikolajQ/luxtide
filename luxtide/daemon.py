@@ -18,22 +18,29 @@ import time
 from gi.repository import Gio, GLib
 
 from . import (BUS_NAME, INTERFACE, OBJECT_PATH, __version__, clamp_level,
-               config as config_module, displays, paths, policy, weather)
-from .backends.backlight import BacklightActuator, _Bus, session_idle_ms
+               config as config_module, displays, locate, paths, policy, weather)
+from .backends.backlight import DESKTOP_NAMES, BacklightActuator, _Bus, session_idle_ms
 from .backends.ddc import DdcActuator
 from .curve import Schedule
 from .outputs import Output
 
-log = logging.getLogger("ddc_sun_dimmer")
+log = logging.getLogger("luxtide")
 
 TICK_SECONDS = 30
+POLL_START = 0.5       # just started, maybe before the desktop: catch the panel lighting up
+START_WINDOW = 30
 POLL_FAST = 2          # panel state while dimmed: reaction time matters
 POLL_SLOW = 20         # nothing to correct after a wake-up
 POLL_MANUAL = 3        # readable backlights: notice the brightness keys
+POWER_SCHEMA = "org.gnome.settings-daemon.plugins.power"
+SENSOR_PROXY = "net.hadess.SensorProxy"
 RESCAN_SECONDS = 30
 WEATHER_CHECK_SECONDS = 300
 WEATHER_LOOKAHEAD = 3 * 3600
-ERROR = "io.github.DdcSunDimmer.Error"
+FOLLOW_START_DELAY = 20       # let the session settle before asking where we are
+FOLLOW_NETWORK_DELAY = 15     # a new network needs a moment before Wi-Fi scans help
+FOLLOW_MIN_INTERVAL = 600
+ERROR = "io.github.MikolajQ.Luxtide.Error"
 
 INTERFACE_XML = f"""
 <node>
@@ -47,6 +54,9 @@ INTERFACE_XML = f"""
     </method>
     <method name="Adjust">
       <arg name="delta" type="i" direction="in"/>
+    </method>
+    <method name="Step">
+      <arg name="direction" type="i" direction="in"/>
     </method>
     <method name="Pause">
       <arg name="until" type="x" direction="in"/>
@@ -152,10 +162,20 @@ class Daemon:
         self._reload_source = None
         self._preview_source = None
         self._zone = self.cfg.zone_name() if self.cfg else None
+        self._follow_was_on = self.cfg.location_follow if self.cfg else False
         self._idle_bus = None
+        self._locator = None
+        self._last_locate = float("-inf")
+        self._follow_source = None
+        self._follow_error = ""
         self.tray = None
         self.session = None
         self.system = None
+        self.started = time.monotonic()
+        self._name_watches = []
+        self._power_settings = None
+        self.light_sensor = None          # unknown until asked
+        self._sensor_asked = False
 
     # --- configuration and state ------------------------------------------
 
@@ -180,10 +200,14 @@ class Daemon:
             self.publish(force=True)
             return
         log.info("settings reloaded")
+        was_on = self._follow_was_on
         self._zone = self.cfg.zone_name()
         self.rescan()
         self._sync_tray()
         self.weather_check()
+        if self.cfg.location_follow and not was_on:
+            self.follow_soon(1, "turned on")
+        self._follow_was_on = self.cfg.location_follow
         self.tick()
 
     def _state_file(self):
@@ -214,8 +238,16 @@ class Daemon:
 
     # --- the decision ------------------------------------------------------
 
+    def weather_blocked(self):
+        """The weather needs real coordinates: the reference city of a time zone
+        can be hundreds of kilometres away, under a different sky."""
+        return (self.cfg.weather_enabled and self.schedule is not None
+                and self.schedule.location_source != "config")
+
     def cloud_at(self, timestamp, now=None):
         if not self.cfg.weather_enabled or self.forecast is None or self.schedule is None:
+            return None
+        if self.weather_blocked():
             return None
         now = now or time.time()
         if not self.forecast.usable(now, self.schedule.latitude, self.schedule.longitude,
@@ -305,7 +337,7 @@ class Daemon:
                     output.actuator.settings = output.settings
                 elif output.actuator.requested != cfg.backlight_method:
                     output.actuator.requested = cfg.backlight_method
-                    output.actuator.select()
+                    self._reselect(output)
                 continue
             if kind == "ddc":
                 settings = cfg.ddc_for(key)
@@ -317,22 +349,121 @@ class Daemon:
             output = Output(key, label, actuator, cfg.display(key), settings, awake,
                             self.scheduler)
             self.outputs[key] = output
+            if kind == "backlight" and not self.dry_run:
+                actuator.watch(self.scheduler,
+                               lambda change, o=output: self._user_changed(o, change))
             log.info("controlling %s: %s%s", label, actuator.describe(),
                      "" if output.display.enabled else " (disabled in settings)")
             if output.awake:
-                output.on_wake(self.level_now, assume_restored=False)
+                output.on_wake(self.level_now)
         if not self.outputs and initial:
             log.warning("no controllable display found")
+        self._check_ambient()
         self._arm_poll()
         return True
 
+    def _reselect(self, output):
+        """Pick the backlight method again; re-assert the level on a change."""
+        before = output.actuator.method
+        method = output.actuator.select()
+        if method is not before:
+            log.info("%s: now %s", output.label, output.actuator.describe())
+            if output.awake or output.events:
+                output.on_wake(self.level_now)
+            self._check_ambient()
+            self._arm_poll()
+            self.tick()                       # write now, not at the next tick
+
+    def _watch_desktop(self):
+        """GNOME Shell or Plasma may come up after us (we start before the
+        desktop to beat the brightness it restores), or restart: follow
+        their interfaces coming and going instead of polling for them."""
+        def changed(connection, name, owner=None):
+            log.debug("%s %s", name, "appeared" if owner else "vanished")
+            for output in list(self.outputs.values()):
+                if output.kind == "backlight":
+                    self._reselect(output)
+        for name in DESKTOP_NAMES:
+            self._name_watches.append(Gio.bus_watch_name_on_connection(
+                self.session, name, Gio.BusNameWatcherFlags.NONE,
+                lambda c, n, o: changed(c, n, o), lambda c, n: changed(c, n)))
+
+    def _user_changed(self, output, change):
+        """The desktop reported the brightness keys or its slider."""
+        if self.schedule is None or self.outputs.get(output.key) is not output:
+            return
+        if not self.cfg.backlight_follow_manual:
+            output.applied = None             # put our level back
+            self.tick()
+            return
+        level = output.user_change(change, self.cfg.step)
+        if level is None:
+            return
+        until = policy.resolve_until(policy.NEXT_PHASE, time.time(), self.schedule)
+        output.hold_manual(level, until)
+        self.tick()
+
+    # --- GNOME's own automatic brightness ------------------------------------
+
+    def _uses_shell(self):
+        return any(o.kind == "backlight" and o.actuator.method is not None
+                   and o.actuator.method.name == "gnome-shell" for o in self.outputs.values())
+
+    def _check_ambient(self):
+        """GNOME's automatic brightness, with a light sensor, sets the same
+        target as we do through the shell; two automatic controllers would
+        fight over it. It is turned off while we control the panel, and the
+        settings window says so. Without a sensor it does nothing, and the
+        setting is left alone."""
+        if self.dry_run or self.session is None or not self._uses_shell():
+            return
+        if self.light_sensor is None:
+            if self.system is not None and not self._sensor_asked:
+                self._ask_sensor()
+            return
+        if not self.light_sensor:
+            return
+        if self._power_settings is None:
+            source = Gio.SettingsSchemaSource.get_default()
+            if source is None or source.lookup(POWER_SCHEMA, True) is None:
+                return
+            self._power_settings = Gio.Settings.new(POWER_SCHEMA)
+            self._power_settings.connect("changed::ambient-enabled",
+                                         lambda *_: self._check_ambient())
+        if self._power_settings.get_boolean("ambient-enabled"):
+            self._power_settings.set_boolean("ambient-enabled", False)
+            Gio.Settings.sync()
+            log.info("turned off GNOME's automatic brightness: its light sensor "
+                     "would fight Luxtide over the same setting")
+
+    def _ask_sensor(self):
+        self._sensor_asked = True
+
+        def answered(connection, result):
+            try:
+                self.light_sensor = bool(connection.call_finish(result).unpack()[0])
+            except GLib.Error as error:
+                log.debug("no light sensor service: %s", error.message)
+                self.light_sensor = False
+            log.debug("ambient light sensor: %s", "yes" if self.light_sensor else "no")
+            self._check_ambient()
+            self.publish()
+        self.system.call(SENSOR_PROXY, "/net/hadess/SensorProxy",
+                         "org.freedesktop.DBus.Properties", "Get",
+                         GLib.Variant("(ss)", (SENSOR_PROXY, "HasAmbientLight")),
+                         GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None,
+                         answered)
+
     def _poll_interval(self):
+        if time.monotonic() - self.started < START_WINDOW:
+            return POLL_START
         level = self.decision.level if self.decision else None
         interval = POLL_SLOW
         for output in self.outputs.values():
             if level is not None and output.dimmed(level):
                 return POLL_FAST
-            if output.actuator.readable and self.cfg.backlight_follow_manual:
+            if output.wants_fast_poll() and (self.cfg.backlight_follow_manual
+                                             or output.events):
                 interval = POLL_MANUAL
         return interval
 
@@ -346,7 +477,10 @@ class Daemon:
         if self._poll_source:
             GLib.source_remove(self._poll_source)
         self._poll_current = interval
-        self._poll_source = GLib.timeout_add_seconds(interval, self._poll_timer)
+        if interval >= 1:
+            self._poll_source = GLib.timeout_add_seconds(int(interval), self._poll_timer)
+        else:
+            self._poll_source = GLib.timeout_add(int(interval * 1000), self._poll_timer)
 
     def _poll_timer(self):
         self._in_poll = True
@@ -372,10 +506,14 @@ class Daemon:
                 log.info("%s went to sleep", output.label)
                 output.on_sleep()
                 changed = True
+        idle = lambda: session_idle_ms(self._idle())
+        for output in self.outputs.values():
+            if output.events and output.verify(idle):
+                changed = True
         if self.cfg.backlight_follow_manual and self.schedule is not None:
-            readable = [o for o in self.outputs.values() if o.actuator.readable]
+            readable = [o for o in self.outputs.values()
+                        if o.actuator.readable and not o.events]
             if readable:
-                idle = lambda: session_idle_ms(self._idle())
                 for output in readable:
                     level = output.check_manual(idle)
                     if level is not None:
@@ -405,6 +543,8 @@ class Daemon:
 
     def weather_check(self, force=False):
         if not self.cfg.weather_enabled or self.schedule is None or self.weather_fetching:
+            return True
+        if self.weather_blocked():
             return True
         now = time.time()
         if not force:
@@ -457,6 +597,60 @@ class Daemon:
         self.tick()
         return False
 
+    # --- following the computer's location ------------------------------------
+
+    def follow_soon(self, delay, reason):
+        """Ask GeoClue where we are in `delay` seconds, when following is on."""
+        if not self.cfg.location_follow:
+            return
+        if self._follow_source:
+            GLib.source_remove(self._follow_source)
+
+        def fire():
+            self._follow_source = None
+            self.follow_check(reason)
+            return False
+        self._follow_source = GLib.timeout_add_seconds(delay, fire)
+
+    def follow_check(self, reason, force=False):
+        if not self.cfg.location_follow or self.config_error or self._locator is not None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_locate < FOLLOW_MIN_INTERVAL:
+            return
+        self._last_locate = now
+        log.debug("asking the location service (%s)", reason)
+        self._locator = locate.GeoClueLocator(self._follow_done, timeout=45, good_enough=100)
+        self._locator.start()
+
+    def _follow_done(self, fix, error):
+        self._locator = None
+        if error:
+            if error != self._follow_error:
+                log.warning("location not updated: %s", error)
+            self._follow_error = error
+            self.publish()
+            return
+        self._follow_error = ""
+        current = None
+        if self.cfg.latitude is not None and self.cfg.longitude is not None:
+            current = (self.cfg.latitude, self.cfg.longitude)
+        if not locate.should_adopt(current, fix):
+            if fix.accuracy > 3000:
+                log.info("location service only knows roughly where we are (%s); "
+                         "keeping the saved location", locate.accuracy_text(fix.accuracy))
+            else:
+                log.debug("location unchanged (%s)", locate.accuracy_text(fix.accuracy))
+            self.publish()
+            return
+        self.cfg.set_location(fix.latitude, fix.longitude, "geoclue", accuracy=fix.accuracy)
+        log.info("location updated by the location service: %.4f, %.4f (%s)",
+                 fix.latitude, fix.longitude, locate.accuracy_text(fix.accuracy))
+        try:
+            config_module.save(self.cfg)       # the file monitor reloads it
+        except OSError as error:
+            log.warning("could not save the new location: %s", error)
+
     # --- status ------------------------------------------------------------
 
     def status(self):
@@ -469,6 +663,13 @@ class Daemon:
         s["show_level"] = cfg.tray_show_level
         s["weather_enabled"] = cfg.weather_enabled
         s["weather_error"] = self.weather_error
+        s["weather_blocked"] = self.weather_blocked()
+        s["location_follow"] = cfg.location_follow
+        s["location_method"] = cfg.location_method
+        s["location_place"] = cfg.location_place
+        s["location_accuracy"] = cfg.location_accuracy
+        s["location_updated"] = cfg.location_updated
+        s["location_error"] = self._follow_error
         s["weather_updated"] = int(self.forecast.fetched_at) if self.forecast else 0
         if self.schedule is not None:
             sun = self.schedule.sun(self.schedule.local_date(now))
@@ -496,8 +697,12 @@ class Daemon:
                 "target": -1 if o.last_target is None else o.last_target,
                 "state": {True: "ok", False: "failed", None: "unknown"}[o.ok],
                 "manual": o.manual_hold.level if o.manual_hold else -1,
+                "note": getattr(o.actuator, "note", "") or "",
             })
         s["outputs"] = outputs
+        s["step"] = cfg.step
+        # GNOME's sensor-driven brightness is kept off while we drive the panel.
+        s["gnome_ambient_off"] = bool(self.light_sensor) and self._uses_shell()
         return s
 
     @staticmethod
@@ -567,8 +772,20 @@ class Daemon:
 
     def adjust(self, delta):
         self._require_schedule()
-        current = self.decision.level if self.decision else 50
-        self.set_level(clamp_level(current + delta), policy.NEXT_PHASE)
+        self.set_level(clamp_level(self._shown_level() + delta), policy.NEXT_PHASE)
+
+    def step(self, direction):
+        """One step of Brighter/Dimmer, the same as a brightness key."""
+        self._require_schedule()
+        self.set_level(policy.step_level(self._shown_level(), direction, self.cfg.step),
+                       policy.NEXT_PHASE)
+
+    def _shown_level(self):
+        """The level on screen: a level set with the brightness keys wins."""
+        for output in self.outputs.values():
+            if output.manual_hold is not None:
+                return output.manual_hold.level
+        return self.decision.level if self.decision else 50
 
     def pause(self, until=policy.FOREVER):
         self._require_schedule()
@@ -608,7 +825,17 @@ class Daemon:
             self.tick()
 
     def open_settings(self, *args):
-        spawn_detached([launcher_path("ddc-sun-dimmer-gui"), *args])
+        spawn_detached([launcher_path("luxtide-settings"), *args])
+
+    def set_autostart(self, enabled):
+        from . import autostart
+        try:
+            autostart.set_enabled(enabled)
+            log.info("start at login %s", "on" if enabled else "off")
+        except OSError as error:
+            log.warning("could not change start at login: %s", error)
+        if self.tray is not None:
+            self.tray.update(self._status or self.status())
 
     def hide_tray(self):
         self.cfg.tray_enabled = False
@@ -641,6 +868,8 @@ class Daemon:
                 self.set_level(args[0], args[1])
             elif method == "Adjust":
                 self.adjust(args[0])
+            elif method == "Step":
+                self.step(args[0])
             elif method == "Pause":
                 self.pause(args[0])
             elif method == "Resume":
@@ -662,8 +891,16 @@ class Daemon:
             log.exception("D-Bus %s failed", method)
             invocation.return_dbus_error(f"{ERROR}.Failed", str(error))
 
+    def _already_running(self):
+        """Checked before touching any display: a second copy, say from a
+        login entry next to an enabled unit, must leave quietly."""
+        reply = self.session.call_sync(
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+            "NameHasOwner", GLib.Variant("(s)", (BUS_NAME,)), GLib.VariantType("(b)"),
+            Gio.DBusCallFlags.NONE, 5000, None)
+        return reply.unpack()[0]
+
     def _export(self):
-        self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         node = Gio.DBusNodeInfo.new_for_xml(INTERFACE_XML)
         self.session.register_object(OBJECT_PATH, node.interfaces[0], self._on_method,
                                      None, None)
@@ -700,6 +937,7 @@ class Daemon:
         self.poll()
         self._arm_poll()
         self.weather_check()
+        self.follow_soon(FOLLOW_NETWORK_DELAY, "resume")
         self.tick()
         return False
 
@@ -723,6 +961,14 @@ class Daemon:
         self.reload_config()
         return False
 
+    def _network_changed(self, monitor, available):
+        if available:
+            # A laptop starts before its Wi-Fi is up; the first download fails
+            # and would otherwise wait 15 minutes.
+            self.weather_retry_at = 0.0
+            self.weather_check()
+            self.follow_soon(FOLLOW_NETWORK_DELAY, "network changed")
+
     def _sync_tray(self):
         wanted = self.tray_allowed and self.cfg.tray_enabled
         if wanted and self.tray is None and self.session is not None:
@@ -741,26 +987,32 @@ class Daemon:
         return False
 
     def run(self):
-        log.info("ddc-sun-dimmer %s%s", __version__, " (dry run)" if self.dry_run else "")
+        log.info("luxtide %s%s", __version__, " (dry run)" if self.dry_run else "")
         if self.schedule is not None:
             lat, lon, source = self.schedule.latitude, self.schedule.longitude, \
                 self.schedule.location_source
             log.info("location %.4f, %.4f (%s), time zone %s", lat, lon,
                      "from settings" if source == "config" else "from time zone",
                      self.cfg.zone_name())
+        self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        if self._already_running():
+            log.info("already running, nothing to do")
+            return 0
         self._export()
         self.tick()
         self.rescan(initial=True)
         self.tick()
         self._watch_sleep()
+        self._watch_desktop()
+        self._check_ambient()
         self._watch_config()
         self._sync_tray()
         GLib.timeout_add_seconds(TICK_SECONDS, self.tick)
         GLib.timeout_add_seconds(RESCAN_SECONDS, self.rescan)
         GLib.timeout_add_seconds(WEATHER_CHECK_SECONDS, self.weather_check)
         monitor = Gio.NetworkMonitor.get_default()
-        monitor.connect("network-changed",
-                        lambda m, available: available and self.weather_check())
+        monitor.connect("network-changed", self._network_changed)
+        self.follow_soon(FOLLOW_START_DELAY, "start")
         self.weather_check()
         for number in (signal.SIGTERM, signal.SIGINT):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number, self.quit)

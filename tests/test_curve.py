@@ -3,7 +3,7 @@ import math
 import unittest
 
 from helpers import make_config
-from ddc_sun_dimmer import clamp_level, curve
+from luxtide import clamp_level, curve
 
 
 def at(schedule, date, hour, minute=0):

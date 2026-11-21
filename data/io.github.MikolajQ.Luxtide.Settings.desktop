@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=Display Brightness
-GenericName=Sun-based brightness
+Name=Luxtide
+GenericName=Automatic Brightness
 Comment=Screen brightness that follows the sun, for monitors and laptop panels
-Exec=@BINDIR@/ddc-sun-dimmer-gui
+Exec=@BINDIR@/luxtide-settings
 Icon=display-brightness-symbolic
 Terminal=false
 Categories=Settings;HardwareSettings;GTK;
-Keywords=brightness;monitor;screen;ddc;backlight;sun;dim;night;
+Keywords=brightness;monitor;screen;ddc;backlight;sun;dim;night;automatic;display;
 StartupNotify=true

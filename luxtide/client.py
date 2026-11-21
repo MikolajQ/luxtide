@@ -41,7 +41,7 @@ class Client:
             remote = Gio.DBusError.get_remote_error(error)
             if remote in ("org.freedesktop.DBus.Error.ServiceUnknown",
                           "org.freedesktop.DBus.Error.NameHasNoOwner"):
-                raise DaemonUnavailable("the ddc-sun-dimmer daemon is not running") from None
+                raise DaemonUnavailable("the luxtide daemon is not running") from None
             Gio.DBusError.strip_remote_error(error)
             raise DaemonError(error.message) from None
         return result.unpack() if result is not None else ()
@@ -54,6 +54,9 @@ class Client:
 
     def adjust(self, delta):
         self.call("Adjust", "(i)", (int(delta),))
+
+    def step(self, direction):
+        self.call("Step", "(i)", (1 if direction > 0 else -1,))
 
     def pause(self, until):
         self.call("Pause", "(x)", (int(until),))

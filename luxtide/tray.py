@@ -12,7 +12,7 @@ import time
 
 from gi.repository import Gio, GLib
 
-from . import policy
+from . import autostart, policy
 from .prefs import load_ui_prefs
 
 log = logging.getLogger(__name__)
@@ -21,7 +21,6 @@ WATCHER = "org.kde.StatusNotifierWatcher"
 ITEM_PATH = "/StatusNotifierItem"
 MENU_PATH = "/MenuBar"
 LEVEL_PRESETS = (100, 75, 50, 25, 10, 1)
-SCROLL_STEP = 5
 EXTEND_MINUTES = 15
 
 ITEM_XML = """
@@ -153,26 +152,41 @@ def headline(status):
     return f"Brightness {level} %"
 
 
-def detail_lines(status):
-    lines = []
+def detail_items(status):
+    """(key, text) of the grey lines under the headline; text "" = not shown.
+
+    The keys are fixed so that the menu keeps one shape while texts come and
+    go (see MenuModel).
+    """
     if status.get("config_error"):
-        lines.append(status["config_error"])
-        return lines
+        return [("error", status["config_error"])]
+    items = []
+    next_line = ""
     if status.get("mode") == "auto" and status.get("next_change"):
-        lines.append(f"Next: {status['next_level']} % at {clock(status['next_change'])}")
-    if status.get("weather_enabled"):
+        next_line = f"Next: {status['next_level']} % at {clock(status['next_change'])}"
+    items.append(("next", next_line))
+    weather_line = ""
+    if status.get("weather_enabled") and status.get("weather_blocked"):
+        weather_line = "Weather off: set your location"
+    elif status.get("weather_enabled"):
         cloud = status.get("cloud", -1)
         if cloud >= 0:
             change = round((status.get("factor", 1.0) - 1) * 100)
-            lines.append(f"Cloud cover {cloud:.0f} %" + (f", {change:+d} %" if change else ""))
+            weather_line = f"Cloud cover {cloud:.0f} %" + (f", {change:+d} %" if change else "")
         elif status.get("weather_error"):
-            lines.append("Weather unavailable")
+            weather_line = "Weather unavailable"
+    items.append(("weather", weather_line))
+    sun_line = ""
     if status.get("sunrise") and status.get("sunset"):
-        lines.append(f"Sunrise {clock(status['sunrise'])}, sunset {clock(status['sunset'])}")
-    for output in status.get("outputs", []):
-        if output.get("state") == "failed":
-            lines.append(f"{output['label']}: not responding")
-    return lines
+        sun_line = f"Sunrise {clock(status['sunrise'])}, sunset {clock(status['sunset'])}"
+    items.append(("sun", sun_line))
+    failed = [o["label"] for o in status.get("outputs", []) if o.get("state") == "failed"]
+    items.append(("failed", f"Not responding: {', '.join(failed)}" if failed else ""))
+    return items
+
+
+def detail_lines(status):
+    return [text for _, text in detail_items(status) if text]
 
 
 def icon_name(status):
@@ -196,11 +210,14 @@ def icon_name(status):
 
 class Item:
     def __init__(self, label="", action=None, enabled=True, separator=False,
-                 toggle=None, checked=False, children=None, icon=None):
+                 toggle=None, checked=False, children=None, icon=None, key=None,
+                 visible=True):
         self.id = 0
+        self.key = key                   # stable among siblings; defaults to the label
         self.label = label
         self.action = action
         self.enabled = enabled
+        self.visible = visible
         self.separator = separator
         self.toggle = toggle             # None, "radio" or "checkmark"
         self.checked = checked
@@ -209,79 +226,90 @@ class Item:
 
     def properties(self):
         if self.separator:
-            return {"type": GLib.Variant("s", "separator")}
-        props = {"label": GLib.Variant("s", self.label.replace("_", "__")),
-                 "enabled": GLib.Variant("b", self.enabled)}
-        if self.toggle:
-            props["toggle-type"] = GLib.Variant("s", self.toggle)
-            props["toggle-state"] = GLib.Variant("i", 1 if self.checked else 0)
-        if self.children:
-            props["children-display"] = GLib.Variant("s", "submenu")
-        if self.icon:
-            props["icon-name"] = GLib.Variant("s", self.icon)
+            props = {"type": GLib.Variant("s", "separator")}
+        else:
+            props = {"label": GLib.Variant("s", self.label.replace("_", "__")),
+                     "enabled": GLib.Variant("b", self.enabled)}
+            if self.toggle:
+                props["toggle-type"] = GLib.Variant("s", self.toggle)
+                props["toggle-state"] = GLib.Variant("i", 1 if self.checked else 0)
+            if self.children:
+                props["children-display"] = GLib.Variant("s", "submenu")
+            if self.icon:
+                props["icon-name"] = GLib.Variant("s", self.icon)
+        if not self.visible:
+            props["visible"] = GLib.Variant("b", False)
         return props
 
-    def signature(self):
-        return (self.label, self.enabled, self.separator, self.toggle, self.checked,
-                self.icon, tuple(child.signature() for child in self.children))
 
-
-def separator():
-    return Item(separator=True)
+def separator(key):
+    return Item(separator=True, key=key)
 
 
 def build_menu(status, actions, prefs):
-    """The menu as a tree of Items for the current status."""
+    """The menu as a tree of Items for the current status.
+
+    Optional entries are hidden rather than left out, so the tree keeps one
+    shape across modes and only properties change (see MenuModel).
+    """
     a = actions
-    items = [Item(headline(status), enabled=False)]
-    items += [Item(line, enabled=False) for line in detail_lines(status)]
+    items = [Item(headline(status), enabled=False, key="headline")]
+    items += [Item(text, enabled=False, key=key, visible=bool(text))
+              for key, text in detail_items(status)]
     if status.get("config_error"):
-        items += [separator(), Item("Open settings…", a.open_settings)]
+        items += [separator("sep-error"), Item("Open settings…", a.open_settings)]
         return Item(children=items)
 
     mode = status.get("mode")
     level = status.get("level")
-    items.append(separator())
+    items.append(separator("sep-top"))
 
     brightness = [Item(f"{preset} %", lambda p=preset: a.set_level(p, policy.NEXT_PHASE),
-                       toggle="radio", checked=(mode in ("override", "paused")
-                                                and level == preset))
+                       toggle="radio", key=f"level-{preset}",
+                       checked=(mode in ("override", "paused") and level == preset))
                   for preset in LEVEL_PRESETS]
-    brightness += [separator(),
-                   Item(f"Brighter (+{SCROLL_STEP} %)", lambda: a.adjust(SCROLL_STEP)),
-                   Item(f"Dimmer (−{SCROLL_STEP} %)", lambda: a.adjust(-SCROLL_STEP))]
-    items.append(Item("Set brightness", children=brightness))
+    brightness += [separator("sep-step"),
+                   Item("Brighter", lambda: a.step(1),
+                        key="brighter", enabled=level is None or level < 100),
+                   Item("Dimmer", lambda: a.step(-1),
+                        key="dimmer", enabled=level is None or level > 1)]
+    items.append(Item("Set brightness", children=brightness, key="set"))
 
-    if mode == "override":
-        items.append(Item("Back to schedule", a.resume))
-    if mode == "paused":
-        items.append(Item("Resume now", a.resume))
-        until = status.get("until", 0)
-        if until:
-            items.append(Item(f"Extend pause by {EXTEND_MINUTES} min",
-                              lambda: a.pause(int(until + EXTEND_MINUTES * 60))))
+    items.append(Item("Set your location…", a.open_locate, key="locate",
+                      visible=status.get("location_source") == "timezone"))
+    items.append(Item("Back to schedule", a.resume, key="back", visible=mode == "override"))
+    items.append(Item("Resume now", a.resume, key="resume", visible=mode == "paused"))
+    until = status.get("until", 0) if mode == "paused" else 0
+    items.append(Item(f"Extend pause by {EXTEND_MINUTES} min",
+                      lambda: a.pause(int(until + EXTEND_MINUTES * 60)),
+                      key="extend", visible=bool(until)))
 
     presets = status.get("pause_presets") or [15, 30, 60, 120]
-    pause_items = [Item(duration_label(m), lambda m=m: a.pause(int(now_fn() + m * 60)))
+    pause_items = [Item(duration_label(m), lambda m=m: a.pause(int(now_fn() + m * 60)),
+                        key=f"pause-{m}")
                    for m in presets]
     last = prefs.get("last_pause_minutes")
-    if isinstance(last, int) and last not in presets:
-        pause_items.append(Item(f"{duration_label(last)} (last used)",
-                                lambda: a.pause(int(now_fn() + last * 60))))
+    show_last = isinstance(last, int) and last > 0 and last not in presets
+    pause_items.append(Item(f"{duration_label(last)} (last used)" if show_last else "",
+                            lambda: a.pause(int(now_fn() + last * 60)),
+                            key="pause-last", visible=show_last))
     next_phase = status.get("next_phase", 0)
     phase_label = "Until the next phase"
     if next_phase:
         phase_label += f" ({clock(next_phase)})"
-    pause_items += [separator(),
-                    Item(phase_label, lambda: a.pause(policy.NEXT_PHASE)),
-                    Item("Until resumed", lambda: a.pause(policy.FOREVER)),
-                    separator(),
-                    Item("Custom…", a.open_pause_dialog)]
-    items.append(Item("Change pause" if mode == "paused" else "Pause", children=pause_items))
+    pause_items += [separator("sep-pause-1"),
+                    Item(phase_label, lambda: a.pause(policy.NEXT_PHASE), key="pause-phase"),
+                    Item("Until resumed", lambda: a.pause(policy.FOREVER), key="pause-forever"),
+                    separator("sep-pause-2"),
+                    Item("Custom…", a.open_pause_dialog, key="pause-custom")]
+    items.append(Item("Change pause" if mode == "paused" else "Pause", children=pause_items,
+                      key="pause"))
 
-    items += [separator(),
-              Item("Settings…", a.open_settings),
-              Item("Hide this icon", a.hide_tray)]
+    items += [separator("sep-bottom"),
+              Item("Start at login", a.toggle_autostart, key="autostart",
+                   toggle="checkmark", checked=bool(status.get("autostart"))),
+              Item("Settings…", a.open_settings, key="settings"),
+              Item("Hide this icon", a.hide_tray, key="hide")]
     return Item(children=items)
 
 
@@ -290,21 +318,85 @@ def now_fn():
     return time.time()
 
 
+def same_value(a, b):
+    return a.get_type_string() == b.get_type_string() and a.unpack() == b.unpack()
+
+
+class MenuModel:
+    """The published menu: stable ids and the difference between versions.
+
+    dbusmenu clients cache items by id. The GNOME AppIndicator extension, on
+    LayoutUpdated, re-reads only "type" and "children-display" of the ids it
+    already knows; labels, sensitivity and check marks change only through
+    ItemsPropertiesUpdated. Ids handed out by position therefore went stale
+    whenever an entry appeared or vanished: labels slid onto neighbouring
+    entries and clicks landed on them. So each item keeps the id of its key
+    path for the life of the process, property changes are announced as
+    such, and LayoutUpdated is reserved for a change of shape. That signal
+    also rebuilds every open submenu in that extension, collapsing it under
+    the pointer, which is a second reason to send it rarely.
+    """
+
+    def __init__(self):
+        self.root = Item()
+        self.items = {0: self.root}
+        self.revision = 1
+        self._ids = {(): 0}
+        self._next_id = 1
+
+    def number(self, root):
+        """Give every item its stable id; returns {id: Item}."""
+        table = {}
+
+        def walk(item, path):
+            if path not in self._ids:
+                self._ids[path] = self._next_id
+                self._next_id += 1
+            item.id = self._ids[path]
+            table[item.id] = item
+            seen = {}
+            for child in item.children:
+                key = child.key if child.key is not None else child.label
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] > 1:
+                    key = f"{key}#{seen[key]}"
+                walk(child, path + (key,))
+
+        walk(root, ())
+        return table
+
+    @staticmethod
+    def shape(table):
+        return {i: tuple(child.id for child in item.children) for i, item in table.items()}
+
+    def update(self, root):
+        """Adopt a new tree. Returns (shape changed, updated, removed) where
+        updated is [(id, {name: Variant})] and removed is [(id, [name])] for
+        items that existed before."""
+        table = self.number(root)
+        reshaped = self.shape(table) != self.shape(self.items)
+        updated, removed = [], []
+        for item_id, item in table.items():
+            old = self.items.get(item_id)
+            if item_id == 0 or old is None:
+                continue
+            new_props, old_props = item.properties(), old.properties()
+            changed = {k: v for k, v in new_props.items()
+                       if k not in old_props or not same_value(old_props[k], v)}
+            gone = [k for k in old_props if k not in new_props]
+            if changed:
+                updated.append((item_id, changed))
+            if gone:
+                removed.append((item_id, gone))
+        self.root, self.items = root, table
+        if reshaped:
+            self.revision += 1
+        return reshaped, updated, removed
+
+
 def number_items(root):
-    """Assign ids depth-first; the root is 0. Returns {id: Item}."""
-    table = {}
-    counter = 0
-
-    def walk(item):
-        nonlocal counter
-        item.id = counter
-        table[counter] = item
-        counter += 1
-        for child in item.children:
-            walk(child)
-
-    walk(root)
-    return table
+    """Ids for a single tree, as a fresh model would give them."""
+    return MenuModel().number(root)
 
 
 def layout(item, depth, names=()):
@@ -338,8 +430,8 @@ class Actions:
     def set_level(self, level, until):
         self._run(self.daemon.set_level, level, until)
 
-    def adjust(self, delta):
-        self._run(self.daemon.adjust, delta)
+    def step(self, direction):
+        self._run(self.daemon.step, direction)
 
     def pause(self, until):
         self._run(self.daemon.pause, until)
@@ -349,6 +441,12 @@ class Actions:
 
     def open_settings(self):
         self._run(self.daemon.open_settings)
+
+    def toggle_autostart(self):
+        self._run(self.daemon.set_autostart, not autostart.is_enabled())
+
+    def open_locate(self):
+        self._run(self.daemon.open_settings, "--locate")
 
     def open_pause_dialog(self):
         self._run(self.daemon.open_settings, "--pause")
@@ -363,10 +461,7 @@ class Tray:
         self.daemon = daemon
         self.actions = Actions(daemon)
         self.status = {}
-        self.revision = 1
-        self.root = Item()
-        self.items = {0: self.root}
-        self._menu_signature = None
+        self.menu = MenuModel()
         self._icon = ""
         self._tooltip = None
         self._label = ""
@@ -440,17 +535,19 @@ class Tray:
                        GLib.Variant("(ss)", (label, "100%")))
 
     def _rebuild(self):
-        root = build_menu(self.status, self.actions, load_ui_prefs())
-        signature = root.signature()
-        if signature == self._menu_signature:
-            return False
-        self._menu_signature = signature
-        self.root = root
-        self.items = number_items(root)
-        self.revision += 1
-        self._emit(MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated",
-                   GLib.Variant("(ui)", (self.revision, 0)))
-        return True
+        """Publish the menu for the current status; True when its shape changed."""
+        # Read at every rebuild: the settings window or the desktop's own
+        # startup settings may have flipped it.
+        status = dict(self.status, autostart=autostart.is_enabled())
+        root = build_menu(status, self.actions, load_ui_prefs())
+        reshaped, updated, removed = self.menu.update(root)
+        if reshaped:
+            self._emit(MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated",
+                       GLib.Variant("(ui)", (self.menu.revision, 0)))
+        if updated or removed:
+            self._emit(MENU_PATH, "com.canonical.dbusmenu", "ItemsPropertiesUpdated",
+                       GLib.Variant("(a(ia{sv})a(ias))", (updated, removed)))
+        return reshaped
 
     def _emit(self, path, interface, name, params=None):
         try:
@@ -466,8 +563,8 @@ class Tray:
     def _item_property(self, connection, sender, path, interface, name):
         values = {
             "Category": ("s", "Hardware"),
-            "Id": ("s", "ddc-sun-dimmer"),
-            "Title": ("s", "Display brightness"),
+            "Id": ("s", "luxtide"),
+            "Title": ("s", "Luxtide"),
             "Status": ("s", "Active"),
             "WindowId": ("i", 0),
             "IconName": ("s", self._icon or icon_name(self.status)),
@@ -501,7 +598,7 @@ class Tray:
             delta, orientation = params.unpack()
             if orientation.lower() == "vertical" and delta:
                 direction = 1 if delta > 0 else -1
-                self.actions.adjust(direction * self._scroll_sign(sender) * SCROLL_STEP)
+                self.actions.step(direction * self._scroll_sign(sender))
 
     def _scroll_sign(self, sender):
         """+1 when positive deltas mean "up". GNOME Shell sends Clutter's
@@ -533,13 +630,13 @@ class Tray:
         args = params.unpack()
         if method == "GetLayout":
             parent, depth, names = args
-            item = self.items.get(parent, self.root)
+            item = self.menu.items.get(parent, self.menu.root)
             invocation.return_value(GLib.Variant(
-                "(u(ia{sv}av))", (self.revision, layout(item, depth, tuple(names)))))
+                "(u(ia{sv}av))", (self.menu.revision, layout(item, depth, tuple(names)))))
         elif method == "GetGroupProperties":
             ids, names = args
-            chosen = [self.items[i] for i in ids if i in self.items] if ids \
-                else list(self.items.values())
+            items = self.menu.items
+            chosen = [items[i] for i in ids if i in items] if ids else list(items.values())
             result = []
             for item in chosen:
                 props = item.properties() if item.id else \
@@ -550,7 +647,8 @@ class Tray:
             invocation.return_value(GLib.Variant("(a(ia{sv}))", (result,)))
         elif method == "GetProperty":
             item_id, name = args
-            props = self.items[item_id].properties() if item_id in self.items else {}
+            item = self.menu.items.get(item_id)
+            props = item.properties() if item is not None else {}
             if name in props:
                 invocation.return_value(GLib.Variant("(v)", (props[name],)))
             else:
@@ -563,7 +661,7 @@ class Tray:
         elif method == "EventGroup":
             errors = []
             for item_id, event, _data, _timestamp in args[0]:
-                if item_id not in self.items:
+                if item_id not in self.menu.items:
                     errors.append(item_id)
                 else:
                     self._activate(item_id, event)
@@ -579,8 +677,9 @@ class Tray:
             invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
 
     def _activate(self, item_id, event):
-        item = self.items.get(item_id)
-        if event != "clicked" or item is None or item.action is None or not item.enabled:
+        item = self.menu.items.get(item_id)
+        if (event != "clicked" or item is None or item.action is None
+                or not item.enabled or not item.visible):
             return
         action = item.action
 

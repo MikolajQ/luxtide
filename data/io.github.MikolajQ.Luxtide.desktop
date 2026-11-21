@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Luxtide
+Comment=Screen brightness that follows the sun
+Exec=@BINDIR@/luxtide autostart
+Icon=display-brightness-symbolic
+Terminal=false
+X-GNOME-Autostart-enabled=true

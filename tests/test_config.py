@@ -1,7 +1,7 @@
 import unittest
 
 from helpers import WARSAW, make_config
-from ddc_sun_dimmer import config
+from luxtide import config
 
 # The shape of a version 1 file, as written before the rewrite.
 LEGACY = """\
@@ -112,6 +112,70 @@ class Parsing(unittest.TestCase):
             self.assertIn(f"[{section}]", text)
         self.assertTrue(text.startswith("#"))
         self.assertIn(WARSAW.splitlines()[1], text)
+
+
+
+class LocationSettings(unittest.TestCase):
+    def test_round_trip_with_how_it_was_found(self):
+        from luxtide import config as config_module
+        cfg = make_config()
+        cfg.set_location(50.061456, 19.936612, "search", place="Kraków, Małopolskie", accuracy=1500)
+        cfg.location_follow = True
+        again = config_module.parse(config_module.render(cfg))
+        self.assertEqual((again.latitude, again.longitude), (50.0615, 19.9366))
+        self.assertEqual(again.location_method, "search")
+        self.assertEqual(again.location_place, "Kraków, Małopolskie")
+        self.assertEqual(again.location_accuracy, 1500)
+        self.assertTrue(again.location_follow)
+        self.assertRegex(again.location_updated, r"^\d{4}-\d\d-\d\d \d\d:\d\d$")
+
+    def test_example_file_is_the_rendered_defaults(self):
+        import pathlib
+        from luxtide import config as config_module
+        example = pathlib.Path(__file__).resolve().parent.parent / "config" / "config.example"
+        self.assertEqual(example.read_text(), config_module.render(config_module.Config()))
+
+
+class LegacyMigration(unittest.TestCase):
+    def test_copies_once_and_never_overwrites(self):
+        import os
+        import pathlib
+        import tempfile
+        from unittest import mock
+        from luxtide import paths
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            env = {"XDG_CONFIG_HOME": str(root / "config"), "XDG_CACHE_HOME": str(root / "cache"),
+                   "XDG_STATE_HOME": str(root / "state"), "XDG_RUNTIME_DIR": str(root / "run")}
+            with mock.patch.dict(os.environ, env):
+                old = root / "config" / paths.LEGACY_APP
+                old.mkdir(parents=True)
+                (old / "config.ini").write_text("[levels]\nnight = 3\n")
+                paths.migrate_legacy()
+                self.assertEqual(paths.config_file().read_text(), "[levels]\nnight = 3\n")
+                self.assertTrue((old / "config.ini").exists())          # left in place
+                paths.config_file().write_text("[levels]\nnight = 5\n")
+                (old / "config.ini").write_text("[levels]\nnight = 9\n")
+                paths.migrate_legacy()
+                self.assertEqual(paths.config_file().read_text(), "[levels]\nnight = 5\n")
+                self.assertFalse(paths.cache_dir().exists())            # nothing to copy
+
+    def test_mutter_method_of_the_old_version_becomes_auto(self):
+        import os
+        import pathlib
+        import tempfile
+        from unittest import mock
+        from luxtide import paths
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root)}):
+                old = root / paths.LEGACY_APP
+                old.mkdir(parents=True)
+                (old / "config.ini").write_text(
+                    "[ddc]\nmethod = mutter\n\n[backlight]\n# via\nmethod = mutter\n")
+                paths.migrate_legacy()
+                self.assertEqual(paths.config_file().read_text(),
+                                 "[ddc]\nmethod = mutter\n\n[backlight]\n# via\nmethod = auto\n")
 
 
 if __name__ == "__main__":

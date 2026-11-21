@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Settings window for ddc-sun-dimmer."""
+"""luxtide command line; see --help."""
 import os
 import sys
 
 # Run from a source checkout (also through a symlink in ~/.local/bin).
 _root = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir))
-if os.path.isdir(os.path.join(_root, "ddc_sun_dimmer")):
+if os.path.isdir(os.path.join(_root, "luxtide")):
     sys.path.insert(0, _root)
 
-from ddc_sun_dimmer.gui.app import main  # noqa: E402
+from luxtide.cli import luxtide_main  # noqa: E402
 
-sys.exit(main(sys.argv[1:]))
+sys.exit(luxtide_main(sys.argv[1:]))

@@ -1,0 +1,39 @@
+# Maintainer: MikolajQ
+
+pkgname=luxtide
+pkgver=2.0.0
+pkgrel=1
+pkgdesc='Automatic screen brightness that follows the sun, for DDC/CI monitors and laptop panels'
+arch=('any')
+url='https://github.com/MikolajQ/luxtide'
+license=('MIT')
+# The project's former name.
+conflicts=('ddc-sun-dimmer')
+replaces=('ddc-sun-dimmer')
+depends=('gtk4' 'python' 'python-gobject')
+optdepends=('ddcutil: external monitors over DDC/CI'
+            'gnome-shell-extension-appindicator: tray icon on GNOME'
+            'geoclue: find the location automatically'
+            'libshumate: map in the location window')
+install=$pkgname.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+# Placeholder until v$pkgver is tagged and public; then run updpkgsums.
+# build-local.sh fills in the sum of its own tarball.
+sha256sums=('SKIP')
+
+check() {
+  cd "$pkgname-$pkgver"
+  python -m unittest discover -s tests
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  make DESTDIR="$pkgdir" PREFIX=/usr install
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+
+  # The modules live in a private directory that users cannot write to, so
+  # without this Python would recompile them at every start. The directory
+  # does not depend on the Python version, so a Python upgrade only makes
+  # these files stale; it does not break the package.
+  python -m compileall -q -o 0 -o 1 -s "$pkgdir" -p / "$pkgdir/usr/lib/$pkgname"
+}

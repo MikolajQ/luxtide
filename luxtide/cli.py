@@ -1,4 +1,4 @@
-"""Command line: `ddc-sun-dimmer <command>` and the short `dim` front end."""
+"""Command line: `luxtide <command>` and the short `dim` front end."""
 
 import datetime as dt
 import json
@@ -8,13 +8,15 @@ import re
 import sys
 import time
 
-from . import __version__, clamp_level, config as config_module, displays, policy, weather
+from . import (__version__, clamp_level, config as config_module, displays, paths, policy,
+               weather)
 
 DIM_HELP = """\
 dim - set display brightness by hand, next to the automatic schedule
 
   dim 40           40 % until the next phase (sunrise, sunset, ramp end)
   dim +10, dim -10 brighter or dimmer by 10 points
+  dim up, dim down one step, like the brightness keys ([levels] step)
   dim -c 60        DDC contrast to 60 (never touched by the schedule)
   dim status       what is set and what comes next
   dim pause [WHEN] freeze the schedule; WHEN = 30m, 1h30m, 21:00, phase
@@ -75,7 +77,9 @@ def local_status():
     schedule = Schedule(cfg)
     now = time.time()
     forecast = weather.load_cache()
+    blocked = cfg.weather_enabled and schedule.location_source != "config"
     cloud_at = lambda t: (forecast.cloud_at(t) if cfg.weather_enabled and forecast
+                          and not blocked
                           and forecast.usable(now, schedule.latitude, schedule.longitude,
                                               cfg.weather_max_age_hours) else None)
     decision = policy.decide(schedule, policy.State(), now, cloud_at(now), cfg)
@@ -92,6 +96,9 @@ def local_status():
         "location_source": schedule.location_source, "weather_enabled": cfg.weather_enabled,
         "weather_updated": int(forecast.fetched_at) if forecast else 0,
         "weather_error": "", "outputs": [], "config_error": "", "zone": cfg.zone_name(),
+        "weather_blocked": blocked, "location_method": cfg.location_method,
+        "location_place": cfg.location_place, "location_accuracy": cfg.location_accuracy,
+        "location_updated": cfg.location_updated, "location_follow": cfg.location_follow,
     }
 
 
@@ -114,10 +121,21 @@ def print_status(s, running):
         print(f"  sun       polar {s['polar']}")
     else:
         print(f"  sun       rise {clock(s.get('sunrise'))}, set {clock(s.get('sunset'))}")
-    source = "settings" if s.get("location_source") == "config" else "time zone"
-    print(f"  location  {s.get('latitude', 0):.4f}, {s.get('longitude', 0):.4f} "
-          f"(from {source})")
-    if s.get("weather_enabled"):
+    from .locate import describe_source
+    if s.get("location_source") == "config":
+        source = describe_source(s.get("location_method"), s.get("location_place"),
+                                 s.get("location_accuracy"), s.get("location_updated")) \
+            or "settings"
+        if s.get("location_follow"):
+            source += ", follows this computer"
+    else:
+        source = f"reference city of {s.get('zone') or 'the time zone'}"
+    print(f"  location  {s.get('latitude', 0):.4f}, {s.get('longitude', 0):.4f} ({source})")
+    if s.get("location_error"):
+        print(f"            not updated: {s['location_error']}")
+    if s.get("weather_enabled") and s.get("weather_blocked"):
+        print("  weather   off until the location is set (luxtide locate)")
+    elif s.get("weather_enabled"):
         if s.get("cloud", -1) >= 0:
             change = round((s.get("factor", 1) - 1) * 100)
             print(f"  weather   cloud cover {s['cloud']:.0f} %, {change:+d} % "
@@ -135,8 +153,10 @@ def print_status(s, running):
         if not o["awake"]:
             extra += ", asleep"
         print(f"  display   {o['label']}: {applied}{state}{extra}  [{o['method']}]")
+        if o.get("note"):
+            print(f"            {o['note']}")
     if not running:
-        print("  daemon    NOT RUNNING (systemctl --user start ddc-sun-dimmer)")
+        print("  daemon    NOT RUNNING (start it: luxtide autostart)")
 
 
 def cmd_status(args):
@@ -214,7 +234,7 @@ def with_daemon(action, fallback=None):
     except DaemonUnavailable as error:
         if fallback is not None:
             return fallback()
-        print(f"{error} (systemctl --user start ddc-sun-dimmer)", file=sys.stderr)
+        print(f"{error} (start it: luxtide autostart)", file=sys.stderr)
         return 1
     except DaemonError as error:
         print(error, file=sys.stderr)
@@ -241,6 +261,14 @@ def cmd_set(args):
 def cmd_adjust(args):
     def act(client):
         client.adjust(args.delta)
+        print(f"brightness {client.status()['level']} %")
+        return 0
+    return with_daemon(act)
+
+
+def cmd_step(args):
+    def act(client):
+        client.step(1 if args.direction == "up" else -1)
         print(f"brightness {client.status()['level']} %")
         return 0
     return with_daemon(act)
@@ -324,6 +352,52 @@ def cmd_profile(args):
     return 0
 
 
+def cmd_locate(args):
+    """Find the location from the command line, and optionally save it."""
+    from . import locate
+    cfg = config_module.load()
+    if args.follow:
+        cfg.location_follow = args.follow == "on"
+        config_module.save(cfg)
+        print(f"following this computer's location: {args.follow}")
+        return 0
+    if args.search:
+        try:
+            places = locate.search_places(args.search)
+        except locate.SearchError as error:
+            print(f"search failed: {error}", file=sys.stderr)
+            return 1
+        if not places:
+            print("nothing found", file=sys.stderr)
+            return 1
+        for number, place in enumerate(places, start=1):
+            print(f"{number:2}. {place.label()}  ({place.latitude:.4f}, {place.longitude:.4f})")
+        if not args.save:
+            print("\nSave one with: luxtide locate --search NAME --pick N --save")
+            return 0
+        if not 1 <= args.pick <= len(places):
+            print(f"--pick must be 1 to {len(places)}", file=sys.stderr)
+            return 1
+        place = places[args.pick - 1]
+        cfg.set_location(place.latitude, place.longitude, "search", place=place.short())
+    else:
+        print("asking the location service…", file=sys.stderr)
+        fix, error = locate.wait_for_fix(timeout=args.timeout)
+        if fix is None:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"{fix.latitude:.4f}, {fix.longitude:.4f}  {locate.accuracy_text(fix.accuracy)}")
+        if not locate.good_for_weather(fix.accuracy):
+            print("That is only a rough estimate (no Wi-Fi?). Better: "
+                  "luxtide locate --search YOUR-TOWN", file=sys.stderr)
+        if not args.save:
+            return 0
+        cfg.set_location(fix.latitude, fix.longitude, "geoclue", accuracy=fix.accuracy)
+    path = config_module.save(cfg)
+    print(f"saved to {path}")
+    return 0
+
+
 def cmd_config(args):
     path = config_module.paths.config_file()
     if args.path:
@@ -343,29 +417,96 @@ def cmd_config(args):
     return 0
 
 
+def stderr_is_journal():
+    """JOURNAL_STREAM is inherited by children whose stderr may go elsewhere;
+    it only counts when it names our actual stderr (see systemd.exec(5))."""
+    value = os.environ.get("JOURNAL_STREAM", "")
+    try:
+        device, inode = (int(part) for part in value.split(":"))
+        info = os.fstat(sys.stderr.fileno())
+    except (ValueError, OSError, AttributeError):
+        return False
+    return (info.st_dev, info.st_ino) == (device, inode)
+
+
+def setup_daemon_logging(verbose):
+    """Journal under systemd; a small rotating file otherwise.
+
+    Started from a desktop's autostart without systemd, stderr goes wherever
+    the session sends it, often nowhere, so the log also goes to
+    $XDG_STATE_HOME/luxtide/daemon.log.
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    journal = stderr_is_journal()
+    logging.basicConfig(level=level,
+                        format="%(message)s" if journal else "%(asctime)s %(message)s",
+                        datefmt="%H:%M:%S")
+    if journal or (hasattr(sys.stderr, "isatty") and sys.stderr.isatty()):
+        return
+    from logging.handlers import RotatingFileHandler
+    try:
+        path = paths.state_dir() / "daemon.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=512 * 1024, backupCount=1,
+                                      encoding="utf-8")
+    except OSError:
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    logging.getLogger().addHandler(handler)
+
+
 def cmd_daemon(args):
-    stream = os.environ.get("JOURNAL_STREAM")
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(message)s" if stream else "%(asctime)s %(message)s",
-        datefmt="%H:%M:%S")
+    setup_daemon_logging(args.verbose)
     from .daemon import Daemon
     return Daemon(dry_run=args.dry_run, tray=not args.no_tray).run()
+
+
+def cmd_autostart(args):
+    """What the login entry runs, and the switch for it."""
+    from . import autostart
+    if args.on or args.off:
+        try:
+            autostart.set_enabled(bool(args.on))
+        except OSError as error:
+            print(f"could not change autostart: {error}", file=sys.stderr)
+            return 1
+    if args.on or args.off or args.status:
+        print("on" if autostart.is_enabled() else "off")
+        return 0
+    # Under systemd the unit runs the daemon: journal, restart on failure.
+    # Enabled, it starts before the desktop at the next login.
+    if not args.foreground:
+        autostart.adopt_unit()
+        if autostart.start_unit():
+            return 0
+    args.dry_run = args.no_tray = args.verbose = False
+    return cmd_daemon(args)
 
 
 def build_parser():
     import argparse
     parser = argparse.ArgumentParser(
-        prog="ddc-sun-dimmer",
-        description="Display brightness that follows the sun (DDC/CI and laptop backlight).")
+        prog="luxtide",
+        description="Luxtide: automatic display brightness that follows the sun "
+                    "(DDC/CI and laptop backlight).")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    p = sub.add_parser("daemon", help="run the daemon (what the systemd unit starts)")
+    p = sub.add_parser("daemon", help="run the daemon in the foreground")
     p.add_argument("--dry-run", action="store_true", help="log writes instead of doing them")
     p.add_argument("--no-tray", action="store_true", help="never show a tray icon")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(func=cmd_daemon)
+
+    p = sub.add_parser("autostart",
+                       help="start the daemon the way a login does; --on/--off/--status")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--on", action="store_true", help="start at login")
+    group.add_argument("--off", action="store_true", help="do not start at login")
+    group.add_argument("--status", action="store_true", help="print on or off")
+    group.add_argument("--foreground", action="store_true",
+                       help="run the daemon here even when systemd could")
+    p.set_defaults(func=cmd_autostart)
 
     p = sub.add_parser("status", help="current level and what comes next")
     p.add_argument("--json", action="store_true")
@@ -381,6 +522,11 @@ def build_parser():
     p = sub.add_parser("adjust", help="brighter or dimmer by DELTA points")
     p.add_argument("delta", type=int)
     p.set_defaults(func=cmd_adjust)
+
+    p = sub.add_parser("step", help="one step brighter or dimmer, like the brightness "
+                       "keys; good for binding keys to on a desktop with external monitors")
+    p.add_argument("direction", choices=("up", "down"))
+    p.set_defaults(func=cmd_step)
 
     p = sub.add_parser("pause", help="freeze the schedule")
     p.add_argument("when", nargs="?", help="30m, 1h30m, 21:00, phase (default: until resumed)")
@@ -406,6 +552,16 @@ def build_parser():
     p.add_argument("--step", type=int, default=30, help="minutes between rows")
     p.set_defaults(func=cmd_profile)
 
+    p = sub.add_parser("locate", help="find this computer's location; --search a town")
+    p.add_argument("--search", metavar="NAME", help="look up a town or village instead")
+    p.add_argument("--pick", type=int, default=1, metavar="N",
+                   help="with --search --save: which result to save (default 1)")
+    p.add_argument("--save", action="store_true", help="save the result to the settings")
+    p.add_argument("--follow", choices=("on", "off"),
+                   help="keep the location up to date from the location service")
+    p.add_argument("--timeout", type=int, default=30, help="seconds to wait for a fix")
+    p.set_defaults(func=cmd_locate)
+
     p = sub.add_parser("config", help="check the settings file")
     group = p.add_mutually_exclusive_group()
     group.add_argument("--path", action="store_true", help="print its location")
@@ -414,7 +570,8 @@ def build_parser():
     return parser
 
 
-def ddc_main(argv):
+def luxtide_main(argv):
+    paths.migrate_legacy()
     if argv and argv[0] == "--status":          # version 1 spelling
         argv = ["status"] + argv[1:]
     parser = build_parser()
@@ -431,6 +588,7 @@ def ddc_main(argv):
 
 def dim_main(argv):
     import argparse
+    paths.migrate_legacy()
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(DIM_HELP, end="")
         return 0
@@ -447,6 +605,8 @@ def dim_main(argv):
                 print("dim -c needs a value from 1 to 100", file=sys.stderr)
                 return 1
             return cmd_contrast(argparse.Namespace(value=int(rest[0]), bus=None))
+        if first in ("up", "down"):
+            return cmd_step(argparse.Namespace(direction=first))
         if re.fullmatch(r"[+-]\d+", first):
             return cmd_adjust(argparse.Namespace(delta=int(first)))
         if first.isdigit() and 1 <= int(first) <= 100:
@@ -454,7 +614,7 @@ def dim_main(argv):
     except (ValueError, config_module.ConfigError) as error:
         print(error, file=sys.stderr)
         return 1
-    print(f"not understood: {first}\nexpected 1-100, +N, -N, -c N, status, pause, resume "
+    print(f"not understood: {first}\nexpected 1-100, +N, -N, up, down, -c N, status, pause, resume "
           "(dim --help)", file=sys.stderr)
     return 1
 
@@ -464,4 +624,4 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if program == "dim":
         return dim_main(argv)
-    return ddc_main(argv)
+    return luxtide_main(argv)

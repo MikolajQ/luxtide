@@ -1,0 +1,28 @@
+[Unit]
+Description=Luxtide: display brightness that follows the sun
+Documentation=man:ddcutil(1)
+# Enabled, it starts with the session's early services, before the desktop
+# shell: on a laptop the shell restores the brightness of the last session
+# as it comes up, and the sooner we are there, the shorter that lasts. The
+# daemon waits for the desktop's brightness interface by itself. Started
+# from the login entry instead (not enabled), it comes after the desktop.
+PartOf=graphical-session.target
+# Earlier versions, under the old name ddc-sun-dimmer, must never run next to
+# this one: the daemon of version 2 and the timer and watcher of version 1.
+Conflicts=ddc-sun-dimmer.service ddc-sun-dimmer.timer ddc-sun-dimmer-watch.service
+
+[Service]
+Type=dbus
+BusName=io.github.MikolajQ.Luxtide
+ExecStart=@BINDIR@/luxtide daemon
+Restart=on-failure
+RestartSec=5s
+
+# ddcutil can log DDC probing straight to syslog, past our stderr. With
+# --skip-ddc-checks little is left, but on monitors whose reads are broken
+# any probe that remains fails and only floods the journal.
+LogFilterPatterns=~read_unsupported_feature
+LogFilterPatterns=~Error detecting VCP version
+
+[Install]
+WantedBy=graphical-session-pre.target

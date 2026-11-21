@@ -3,7 +3,7 @@ import unittest
 import zoneinfo
 
 import helpers  # noqa: F401
-from ddc_sun_dimmer import solar
+from luxtide import solar
 
 WARSAW = zoneinfo.ZoneInfo("Europe/Warsaw")
 

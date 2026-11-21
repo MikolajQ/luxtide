@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from ddc_sun_dimmer import config  # noqa: E402
+from luxtide import config  # noqa: E402
 
 WARSAW = """\
 [location]

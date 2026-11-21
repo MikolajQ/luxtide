@@ -149,6 +149,21 @@ def preview(state, level, now):
     state.preview = Hold(clamp_level(level), now + PREVIEW_SECONDS)
 
 
+def step_level(level, direction, percent, presses=1):
+    """One step brighter (+1) or dimmer (-1): `percent` of the current level,
+    at least one point. The steps are even to the eye and get fine near the
+    bottom, where a fixed 5 points would go from 6 % straight to 1 %. Up and
+    down retrace each other: 50 -> 55 -> 50 with 10 %."""
+    factor = 1.0 + percent / 100.0
+    for _ in range(max(1, presses)):
+        if direction > 0:
+            level = max(level + 1, round(level * factor))
+        elif direction < 0:
+            level = min(level - 1, round(level / factor))
+        level = clamp_level(level)
+    return level
+
+
 def next_change(schedule, state, now, cloud_at, cfg, horizon=26 * 3600):
     """(unix time, level) of the next change of the decided level, or (None, None)."""
     current = decide(schedule, state, now, cloud_at(now), cfg)

@@ -16,13 +16,13 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from .. import SETTINGS_APP_ID, config as config_module, paths, policy, solar, weather  # noqa: E402
+from .. import (SETTINGS_APP_ID, autostart, config as config_module, locate,  # noqa: E402
+               paths, policy, solar, weather)
 from ..client import Client, DaemonError, DaemonUnavailable  # noqa: E402
-from ..config import ConfigError, DisplaySettings  # noqa: E402
+from ..config import METHODS, ConfigError, DisplaySettings  # noqa: E402
 from ..prefs import load_ui_prefs, remember  # noqa: E402
 from . import chart  # noqa: E402
 
-SERVICE = "ddc-sun-dimmer.service"
 SAVE_DELAY_MS = 600
 PREVIEW_DELAY_MS = 200
 PREVIEW_RENEW_S = 10
@@ -36,13 +36,13 @@ CSS = """
 .small { font-size: 0.9em; }
 .error-text { color: #c01c28; }
 .banner { background: alpha(#e5a50a, 0.20); border-radius: 10px; padding: 10px 14px; }
+.warning-text { color: #c64600; }
 """
 
 CHART_HINT = ("Drag the round handles to change levels and the square ones to widen or "
               "narrow the ramps.")
 
 MODES = ("time", "elevation")
-METHODS = ("auto", "mutter", "kde", "logind", "sysfs")
 
 
 def clock(timestamp):
@@ -63,20 +63,21 @@ def label(text="", css=(), xalign=0.0, wrap=False, max_chars=-1):
     return widget
 
 
-def run_systemctl(*args):
+def start_daemon():
+    """Start the daemon the way a login does (systemd unit, or in place)."""
     try:
-        process = Gio.Subprocess.new(["systemctl", "--user", *args],
-                                     Gio.SubprocessFlags.STDOUT_PIPE
+        process = Gio.Subprocess.new([autostart.executable(), "autostart"],
+                                     Gio.SubprocessFlags.STDOUT_SILENCE
                                      | Gio.SubprocessFlags.STDERR_SILENCE)
-        _, out, _ = process.communicate_utf8(None, None)
-        return process.get_exit_status(), (out or "").strip()
+        process.wait_async(None, None, None)
+        return True
     except GLib.Error:
-        return 1, ""
+        return False
 
 
 class SettingsWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Display brightness")
+        super().__init__(application=app, title="Luxtide")
         self.set_default_size(820, 960)
         self.status = {}
         self.forecast_points = []
@@ -99,11 +100,13 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self._backed_up = False
         self._display_keys = None
         self._hint_source = None
+        self._locate_window = None
 
         self._build()
         self._fill()
         self._load_forecast_cache()
         self._connect_daemon()
+        self._watch_config()
         self.connect("close-request", self._on_close)
         GLib.timeout_add_seconds(30, self._refresh_now)
 
@@ -150,6 +153,53 @@ class SettingsWindow(Gtk.ApplicationWindow):
             self.path_label.set_text(f"Saved to {path}")
         except OSError as error:
             self.error_label.set_text(f"Could not save: {error}")
+        return False
+
+    def _watch_config(self):
+        """Pick up changes made elsewhere: by hand, or by the daemon when it
+        follows this computer's location. Without this, the next save from
+        this window would put the old values back."""
+        path = self.cfg.source or paths.config_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._config_monitor = Gio.File.new_for_path(str(path.parent)).monitor_directory(
+                Gio.FileMonitorFlags.WATCH_MOVES, None)
+        except (GLib.Error, OSError):
+            return
+        self._config_monitor.connect("changed", self._config_event)
+        self._config_reload_source = None
+
+    def _config_event(self, monitor, file, other, event):
+        path = self.cfg.source or paths.config_file()
+        names = {file.get_basename(), other.get_basename() if other else None}
+        if path.name not in names:
+            return
+        if self._config_reload_source:
+            GLib.source_remove(self._config_reload_source)
+        self._config_reload_source = GLib.timeout_add(400, self._config_reload)
+
+    def _config_reload(self):
+        self._config_reload_source = None
+        if self._save_source or self.load_error:
+            return False                     # our own pending save wins
+        path = self.cfg.source or paths.config_file()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if text == config_module.render(self.cfg):
+            return False                     # what we wrote ourselves
+        try:
+            fresh = config_module.parse(text, path)
+            fresh.validate()
+        except ConfigError:
+            return False                     # half-edited by hand; wait for the next save
+        fresh.source = path
+        self.cfg = fresh
+        self._fill()
+        self.model_dirty = True
+        self.area.queue_draw()
+        self.path_label.set_text(f"Reloaded {path}: changed outside this window")
         return False
 
     # --- layout ----------------------------------------------------------------
@@ -235,6 +285,37 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.banner.append(self.banner_button)
         box.append(self.banner)
 
+        self.location_banner = Gtk.Box(spacing=12, visible=False)
+        self.location_banner.add_css_class("banner")
+        text = label("Where are you? With the reference city of your time zone the sun "
+                     "times are roughly right, but the weather cannot be used.", wrap=True)
+        text.set_hexpand(True)
+        button = Gtk.Button(label="Find my location…", valign=Gtk.Align.CENTER)
+        button.connect("clicked", self._open_locate)
+        self.location_banner.append(text)
+        self.location_banner.append(button)
+        box.append(self.location_banner)
+
+        self.ambient_banner = Gtk.Box(spacing=12, visible=False)
+        self.ambient_banner.add_css_class("banner")
+        text = label("GNOME's automatic brightness is off. Its light sensor would set the "
+                     "built-in panel too, and the two would fight. To let the sensor decide "
+                     "instead, turn off “Control the built-in panel” under Laptop backlight "
+                     "below, then turn automatic brightness back on in GNOME's power "
+                     "settings.", wrap=True)
+        text.set_hexpand(True)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                          valign=Gtk.Align.CENTER)
+        button = Gtk.Button(label="Power settings…")
+        button.connect("clicked", self._open_power_settings)
+        buttons.append(button)
+        button = Gtk.Button(label="Got it")
+        button.connect("clicked", self._dismiss_ambient)
+        buttons.append(button)
+        self.ambient_banner.append(text)
+        self.ambient_banner.append(buttons)
+        box.append(self.ambient_banner)
+
         row = Gtk.Box(spacing=16)
         self.level_label = label("—", ("big-level",))
         row.append(self.level_label)
@@ -248,8 +329,19 @@ class SettingsWindow(Gtk.ApplicationWindow):
         box.append(row)
         return box
 
+    def _open_power_settings(self, *_):
+        if shutil.which("gnome-control-center"):
+            Gio.Subprocess.new(["gnome-control-center", "power"], Gio.SubprocessFlags.NONE)
+
+    def _dismiss_ambient(self, *_):
+        remember("ambient_notice_seen", True)
+        self.ambient_banner.set_visible(False)
+
     def _update_status(self):
         s = self.status
+        self.ambient_banner.set_visible(
+            bool(self.daemon_up and s.get("gnome_ambient_off"))
+            and not load_ui_prefs().get("ambient_notice_seen"))
         if self.load_error:
             self.banner_text.set_text(f"The settings file could not be read: "
                                       f"{self.load_error}\nThe defaults are shown; the "
@@ -539,6 +631,15 @@ class SettingsWindow(Gtk.ApplicationWindow):
         grid.attach(label("Percent of the display's range. 1 % is the floor: zero can switch "
                           "some backlights off entirely.", ("dim", "small"), wrap=True),
                     0, 3, 4, 1)
+        self.step_spin = self._spin(1, 50, 1, 0, lambda v: self._set("step", int(v)))
+        grid.attach(label("Step"), 0, 4, 1, 1)
+        step_box = Gtk.Box(spacing=10)
+        step_box.append(self.step_spin)
+        step_box.append(label("% of the current level, at least 1 point: Brighter and Dimmer, "
+                              "the scroll wheel over the tray icon and, on GNOME and Plasma, "
+                              "the brightness keys", ("dim", "small"), wrap=True,
+                              max_chars=60))
+        grid.attach(step_box, 1, 4, 3, 1)
         return grid
 
     def _level_changed(self, adjustment, name):
@@ -711,13 +812,22 @@ class SettingsWindow(Gtk.ApplicationWindow):
         grid.attach(label("Forecast from open-meteo.com. It receives your location rounded "
                           "to about 1 km, and nothing else.", ("dim", "small"), wrap=True),
                     0, 5, 3, 1)
+        self.weather_blocked_label = label(
+            "Off until your location is set (Location, below): cloud cover in the "
+            "reference city of your time zone says little about your sky.",
+            ("warning-text",), wrap=True)
+        grid.attach(self.weather_blocked_label, 0, 6, 3, 1)
         self.weather_widgets = [strength, self.refresh_spin, refresh, strength_hint]
         return grid
 
     def _update_weather_label(self):
         s = self.status
+        blocked = self.cfg.weather_enabled and self.cfg.latitude is None
+        self.weather_blocked_label.set_visible(blocked)
         if not self.cfg.weather_enabled:
             text = "Off."
+        elif blocked:
+            text = "Waiting for your location."
         elif not self.daemon_up:
             text = "The service fetches the forecast once it runs."
         elif s.get("cloud", -1) >= 0:
@@ -748,37 +858,88 @@ class SettingsWindow(Gtk.ApplicationWindow):
 
     def _build_location(self):
         grid = self._grid()
+        find_row = Gtk.Box(spacing=12)
+        find = Gtk.Button(label="Find my location…")
+        find.add_css_class("suggested-action")
+        find.connect("clicked", self._open_locate)
+        self.location_source_label = label("", ("dim",), wrap=True)
+        self.location_source_label.set_hexpand(True)
+        find_row.append(find)
+        find_row.append(self.location_source_label)
+        grid.attach(find_row, 0, 0, 3, 1)
+        self.location_warning = label("", ("warning-text",), wrap=True)
+        grid.attach(self.location_warning, 0, 1, 3, 1)
+
         self.use_zone_check = Gtk.CheckButton(label="Use the reference city of my time zone")
         self.use_zone_check.connect("toggled", self._zone_toggled)
-        grid.attach(self.use_zone_check, 0, 0, 3, 1)
+        grid.attach(self.use_zone_check, 0, 2, 3, 1)
         self.latitude_spin = self._spin(-90, 90, 0.01, 4,
                                         lambda v: self._set_location("latitude", v))
         self.longitude_spin = self._spin(-180, 180, 0.01, 4,
                                          lambda v: self._set_location("longitude", v))
-        self._row(grid, 1, "Latitude", self.latitude_spin, "degrees, north positive")
-        self._row(grid, 2, "Longitude", self.longitude_spin, "degrees, east positive")
+        self._row(grid, 3, "Latitude", self.latitude_spin, "degrees, north positive")
+        self._row(grid, 4, "Longitude", self.longitude_spin, "degrees, east positive")
         self.timezone_entry = Gtk.Entry(hexpand=False, width_chars=24)
         self.timezone_entry.connect("changed", self._timezone_changed)
-        self._row(grid, 3, "Time zone", self.timezone_entry, "empty = follow the system")
+        self._row(grid, 5, "Time zone", self.timezone_entry, "empty = follow the system")
+        self.follow_location_switch = self._switch(self._follow_changed)
+        self._row(grid, 6, "Keep it up to date", self.follow_location_switch,
+                  "for laptops: asks the location service at start-up and when the "
+                  "network changes, and takes only fixes within 3 km")
         self.location_note = label("", ("dim", "small"), wrap=True)
-        grid.attach(self.location_note, 0, 4, 3, 1)
+        grid.attach(self.location_note, 0, 7, 3, 1)
         return grid
+
+    def _open_locate(self, *_):
+        from .locate_window import LocateWindow
+        if self._locate_window is not None:
+            self._locate_window.present()
+            return
+        try:
+            lat, lon, source = self.cfg.location()
+        except ConfigError:
+            lat, lon, source = 52.0, 19.0, "timezone"
+        window = LocateWindow(self, (lat, lon, source == "config"), self._location_chosen)
+        window.connect("close-request", lambda *_: setattr(self, "_locate_window", None))
+        self._locate_window = window
+        window.present()
+
+    def _location_chosen(self, latitude, longitude, method, place, accuracy):
+        self.cfg.set_location(latitude, longitude, method, place=place, accuracy=accuracy)
+        self._loading = True
+        self.use_zone_check.set_active(False)
+        self.latitude_spin.set_value(self.cfg.latitude)
+        self.longitude_spin.set_value(self.cfg.longitude)
+        self._loading = False
+        self._fill_location_note()
+        self.changed()
+
+    def _follow_changed(self, value):
+        if self._loading:
+            return
+        self.cfg.location_follow = value
+        self._fill_location_note()
+        self.changed()
 
     def _zone_toggled(self, check):
         if self._loading:
             return
         if check.get_active():
             self.cfg.latitude = self.cfg.longitude = None
+            self.cfg.location_method = self.cfg.location_place = ""
+            self.cfg.location_accuracy = 0
         else:
-            self.cfg.latitude = round(self.latitude_spin.get_value(), 4)
-            self.cfg.longitude = round(self.longitude_spin.get_value(), 4)
+            self.cfg.set_location(self.latitude_spin.get_value(),
+                                  self.longitude_spin.get_value(), "manual")
         self._fill_location_note()
         self.changed()
 
     def _set_location(self, name, value):
         if self._loading or self.use_zone_check.get_active():
             return
-        setattr(self.cfg, name, round(value, 4))
+        self.cfg.set_location(self.latitude_spin.get_value(), self.longitude_spin.get_value(),
+                              "manual")
+        self._fill_location_note()
         self.changed()
 
     def _timezone_changed(self, entry):
@@ -797,18 +958,40 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.changed()
 
     def _fill_location_note(self):
-        zone = self.cfg.zone_name()
+        c = self.cfg
+        zone = c.zone_name()
         coords = solar.zone_coordinates(zone)
-        if self.cfg.latitude is None:
+        self.location_banner.set_visible(c.latitude is None)
+        if c.latitude is None:
+            self.location_source_label.set_text("")
+            city = zone.split("/")[-1].replace("_", " ")
             if coords:
-                self.location_note.set_text(
-                    f"Using {zone}: {coords[0]:.2f}, {coords[1]:.2f}. Sunrise may be off by up "
-                    f"to half an hour; enter your coordinates for precision.")
+                self.location_warning.set_text(
+                    f"Using {city}, the reference city of {zone}. Sunrise and sunset may "
+                    f"be off by up to half an hour, and the weather correction stays off: "
+                    f"cloud cover there says little about your sky.")
             else:
-                self.location_note.set_text(f"{zone} has no reference city: enter coordinates.")
+                self.location_warning.set_text(f"{zone} has no reference city: find your "
+                                               f"location or enter coordinates.")
+            self.location_warning.set_visible(True)
         else:
-            self.location_note.set_text("Coordinates stay on this computer, except for the "
-                                        "rounded weather request.")
+            source = locate.describe_source(c.location_method, c.location_place,
+                                            c.location_accuracy, c.location_updated)
+            self.location_source_label.set_text(source)
+            rough = c.location_method == "geoclue" and c.location_accuracy and \
+                not locate.good_for_weather(c.location_accuracy)
+            self.location_warning.set_text(
+                "This position is only a rough estimate: search for your town or click on "
+                "the map for a better one." if rough else "")
+            self.location_warning.set_visible(bool(rough))
+        error = self.status.get("location_error") if c.location_follow else ""
+        note = ("Coordinates stay on this computer, except for the rounded weather request"
+                + (" and the location service's Wi-Fi lookup." if c.location_follow else "."))
+        if error:
+            note = f"Last automatic update failed: {error}\n" + note
+        self.location_note.set_text(note)
+        if hasattr(self, "weather_blocked_label"):
+            self._update_weather_label()
 
     # --- displays ----------------------------------------------------------------
 
@@ -820,7 +1003,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
 
     def _update_displays(self):
         outputs = self.status.get("outputs", []) if self.daemon_up else []
-        keys = tuple((o["key"], o["label"], o["method"]) for o in outputs)
+        keys = tuple((o["key"], o["label"], o["method"], o.get("note", "")) for o in outputs)
         if keys == self._display_keys:
             return
         self._display_keys = keys
@@ -839,6 +1022,8 @@ class SettingsWindow(Gtk.ApplicationWindow):
             name = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
             name.append(label(output["label"]))
             name.append(label(f"{output['method']} · settings name {key}", ("dim", "small")))
+            if output.get("note"):
+                name.append(label(output["note"], ("small",), wrap=True, max_chars=50))
             switch = Gtk.Switch(active=settings.enabled, valign=Gtk.Align.CENTER)
             switch.connect("notify::active",
                            lambda w, _p, k=key: self._set_display(k, enabled=w.get_active()))
@@ -884,7 +1069,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
                 ("refresh_minutes", "Re-write while dimmed every", 0, 1440, 1, 0,
                  "minutes, 0 = never"),
                 ("restore_level", "Monitor falls back to", 1, 100, 1, 0,
-                 "% by itself (wake-ups at this level need no correction)"))
+                 "% by itself (no periodic re-writes at this level)"))
         for row, (name, text, low, high, step, digits, hint) in enumerate(rows, start=1):
             convert = int if digits == 0 else float
             spin = self._spin(low, high, step, digits,
@@ -911,7 +1096,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.backlight_switch = self._switch(lambda v: self._set("backlight_enabled", v))
         self._row(grid, 0, "Control the built-in panel", self.backlight_switch)
         self.method_dropdown = Gtk.DropDown.new_from_strings(
-            ["Automatic", "GNOME (Mutter)", "KDE Plasma", "logind", "sysfs"])
+            ["Automatic", "GNOME Shell", "GNOME (Mutter)", "KDE Plasma", "logind", "sysfs"])
         self.method_dropdown.connect(
             "notify::selected",
             lambda d, _p: self._set("backlight_method", METHODS[d.get_selected()]))
@@ -938,8 +1123,8 @@ class SettingsWindow(Gtk.ApplicationWindow):
                   "minutes, comma separated, offered in the tray menu")
         self.autostart_switch = Gtk.Switch(halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
         self.autostart_switch.connect("notify::active", self._autostart_changed)
-        self._row(grid, 3, "Start with the session", self.autostart_switch,
-                  f"systemctl --user enable {SERVICE}")
+        self._row(grid, 3, "Start at login", self.autostart_switch,
+                  "also in the tray menu and in the desktop's startup settings")
         return grid
 
     def _presets_changed(self, entry):
@@ -960,9 +1145,10 @@ class SettingsWindow(Gtk.ApplicationWindow):
     def _autostart_changed(self, switch, _param):
         if self._loading:
             return
-        code, _ = run_systemctl("enable" if switch.get_active() else "disable", SERVICE)
-        if code != 0:
-            self.error_label.set_text("systemctl could not change autostart")
+        try:
+            autostart.set_enabled(switch.get_active())
+        except OSError as error:
+            self.error_label.set_text(f"Could not change start at login: {error}")
 
     # --- footer --------------------------------------------------------------------
 
@@ -1004,6 +1190,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         c = self.cfg
         for name in ("day", "twilight", "night"):
             self.level_adjustments[name].set_value(getattr(c, name))
+        self.step_spin.set_value(c.step)
         self.mode_dropdown.set_selected(MODES.index(c.mode))
         self.smooth_check.set_active(c.smooth)
         self.margin_spin.set_value(c.margin_minutes)
@@ -1023,6 +1210,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.timezone_entry.set_text(c.timezone)
         self.timezone_entry.set_placeholder_text(
             f"system ({solar.system_timezone_name() or 'UTC'})")
+        self.follow_location_switch.set_active(c.location_follow)
         self._fill_location_note()
         d = c.ddc
         self.ddc_widgets["enabled"].set_active(d.enabled)
@@ -1038,8 +1226,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.tray_switch.set_active(c.tray_enabled)
         self.show_level_switch.set_active(c.tray_show_level)
         self.presets_entry.set_text(", ".join(str(p) for p in c.tray_pause_presets))
-        code, out = run_systemctl("is-enabled", SERVICE)
-        self.autostart_switch.set_active(out == "enabled")
+        self.autostart_switch.set_active(autostart.is_enabled())
         self._set_date(self.date)
         self.path_label.set_text(str(c.source or paths.config_file()))
         self._display_keys = None
@@ -1081,7 +1268,7 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.status = status
         self._update_status()
         self._update_displays()
-        self._update_weather_label()
+        self._fill_location_note()
         if stamp != self.forecast_stamp:
             self.forecast_stamp = stamp
             self._load_forecast()
@@ -1100,9 +1287,8 @@ class SettingsWindow(Gtk.ApplicationWindow):
         return False
 
     def _start_daemon(self, *_):
-        code, _ = run_systemctl("start", SERVICE)
-        if code != 0:
-            self.error_label.set_text(f"Could not start {SERVICE}; is it installed?")
+        if not start_daemon():
+            self.error_label.set_text("Could not start the service; is it installed?")
 
     def _on_close(self, *_):
         if self._trying:
@@ -1225,6 +1411,8 @@ class App(Gtk.Application):
         if self.window is None:
             self.window = SettingsWindow(self)
         self.window.present()
+        if "--locate" in args:
+            self.window._open_locate()
         if "--screenshot" in args:
             path = args[args.index("--screenshot") + 1]
             expand = "--expand" in args
@@ -1239,7 +1427,8 @@ class App(Gtk.Application):
                 return False
 
             def finish():
-                save_screenshot(self.window.content, path)
+                dialog = self.window._locate_window
+                save_screenshot(dialog.get_child() if dialog else self.window.content, path)
                 self.quit()
                 return False
             GLib.timeout_add(1500, shoot)
@@ -1255,4 +1444,5 @@ class App(Gtk.Application):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    paths.migrate_legacy()
     return App().run([sys.argv[0], *argv])

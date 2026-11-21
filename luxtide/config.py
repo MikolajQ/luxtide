@@ -34,6 +34,9 @@ class DdcSettings:
     restore_level: int = 100           # what the monitor falls back to by itself
 
 
+# Ways to drive a laptop panel; see backends/backlight.py.
+METHODS = ("auto", "gnome-shell", "mutter", "kde", "logind", "sysfs")
+
 # Settings that a [display:...] section may override.
 DDC_OVERRIDABLE = ("sleep_multiplier", "retries", "repeats", "settle", "syslog",
                    "mccs", "skip_ddc_checks", "wake_burst", "refresh_minutes",
@@ -62,10 +65,16 @@ class Config:
     latitude: float | None = None
     longitude: float | None = None
     timezone: str = ""
+    location_follow: bool = False      # let the daemon update it from GeoClue
+    location_method: str = ""          # how it was found: manual, geoclue, search, map
+    location_place: str = ""           # the place name, when found by search
+    location_accuracy: int = 0         # metres; 0 = unknown
+    location_updated: str = ""         # "YYYY-MM-DD HH:MM"
     # [levels]
     day: int = 100
     twilight: int = 75
     night: int = 1
+    step: int = 20                     # % of the level per key press or menu step
     # [schedule]
     mode: str = "time"                 # "time" or "elevation"
     smooth: bool = True
@@ -84,7 +93,7 @@ class Config:
     # [backlight]
     backlight_enabled: bool = True
     backlight_device: str = ""
-    backlight_method: str = "auto"     # auto, mutter, kde, logind, sysfs
+    backlight_method: str = "auto"     # auto, gnome-shell, mutter, kde, logind, sysfs
     backlight_follow_manual: bool = True
     # [tray]
     tray_enabled: bool = True
@@ -102,6 +111,15 @@ class Config:
 
     def zone_name(self):
         return self.timezone or solar.system_timezone_name() or "UTC"
+
+    def set_location(self, latitude, longitude, method, place="", accuracy=0):
+        """Coordinates found one way or another, with a note of how."""
+        from .locate import now_text
+        self.latitude, self.longitude = round(latitude, 4), round(longitude, 4)
+        self.location_method = method
+        self.location_place = place
+        self.location_accuracy = int(round(accuracy or 0))
+        self.location_updated = now_text()
 
     def location(self):
         """(latitude, longitude, source) where source is 'config' or 'timezone'."""
@@ -244,10 +262,17 @@ def parse(text, origin="config.ini"):
     cfg.latitude = r.optional_number("location", "latitude", -90, 90)
     cfg.longitude = r.optional_number("location", "longitude", -180, 180)
     cfg.timezone = r.text("location", "timezone", "")
+    cfg.location_follow = r.boolean("location", "follow", cfg.location_follow)
+    cfg.location_method = r.choice("location", "method", "",
+                                   ("", "manual", "geoclue", "search", "map"))
+    cfg.location_place = r.text("location", "place", "")
+    cfg.location_accuracy = r.integer("location", "accuracy", 0, 0, 20_000_000)
+    cfg.location_updated = r.text("location", "updated", "")
 
     cfg.day = r.integer("levels", "day", cfg.day, MIN_LEVEL, MAX_LEVEL)
     cfg.twilight = r.integer("levels", "twilight", cfg.twilight, MIN_LEVEL, MAX_LEVEL)
     cfg.night = r.integer("levels", "night", cfg.night, MIN_LEVEL, MAX_LEVEL)
+    cfg.step = r.integer("levels", "step", cfg.step, 1, 50)
 
     cfg.mode = r.choice("schedule", "mode", cfg.mode, ("time", "elevation"))
     cfg.smooth = r.boolean("schedule", "smooth", cfg.smooth)
@@ -286,7 +311,7 @@ def parse(text, origin="config.ini"):
     cfg.backlight_enabled = r.boolean("backlight", "enabled", cfg.backlight_enabled)
     cfg.backlight_device = r.text("backlight", "device", cfg.backlight_device)
     cfg.backlight_method = r.choice("backlight", "method", cfg.backlight_method,
-                                    ("auto", "mutter", "kde", "logind", "sysfs"))
+                                    METHODS)
     cfg.backlight_follow_manual = r.boolean("backlight", "follow_manual",
                                             cfg.backlight_follow_manual)
 
@@ -375,16 +400,27 @@ def render(cfg):
     d = cfg.ddc
     presets = ", ".join(str(p) for p in cfg.tray_pause_presets)
     text = f"""\
-# ddc-sun-dimmer settings. The settings window rewrites this file; editing it
+# Luxtide settings. The settings window rewrites this file; editing it
 # by hand works too, and the daemon picks up every change within a second.
 
 [location]
 # Decimal degrees, north and east positive. Leave both empty to use the
-# reference city of your time zone: rough, but it needs no setup.
+# reference city of your time zone: fine for the sun, useless for the
+# weather, which then stays off.
 latitude = {_num(cfg.latitude)}
 longitude = {_num(cfg.longitude)}
 # IANA name such as Europe/Warsaw. Empty = follow the system time zone.
 timezone = {cfg.timezone}
+# yes = update the coordinates from the desktop's location service (GeoClue)
+# at start-up and when the network changes, for laptops that travel. Only
+# fixes within 3 km are taken, and only moves of 1 km or more are saved.
+follow = {_num(cfg.location_follow)}
+# How the coordinates were found (manual, geoclue, search, map), the place
+# name, the accuracy in metres and when. For information only.
+method = {cfg.location_method}
+place = {cfg.location_place}
+accuracy = {cfg.location_accuracy}
+updated = {cfg.location_updated}
 
 [levels]
 # Brightness in percent, 1-100. Zero is refused on purpose: on some monitors
@@ -392,6 +428,10 @@ timezone = {cfg.timezone}
 day = {cfg.day}
 twilight = {cfg.twilight}
 night = {cfg.night}
+# One step of Brighter/Dimmer, of the scroll wheel over the tray icon and,
+# where the desktop reports them (GNOME 49+, Plasma 6), of the brightness
+# keys: this percentage of the current level, at least 1 point.
+step = {cfg.step}
 
 [schedule]
 # time      = ramps of +/- margin_minutes around sunrise and sunset
@@ -442,8 +482,9 @@ skip_ddc_checks = {_num(d.skip_ddc_checks)}
 wake_burst = {_num(d.wake_burst)}
 # Re-write the level every N minutes while dimmed; 0 = never.
 refresh_minutes = {d.refresh_minutes}
-# The level the monitor falls back to on its own. Bursts and refreshes are
-# skipped whenever the target equals it.
+# The level the monitor falls back to on its own. Refreshes are skipped
+# whenever the target equals it; wake-up bursts are not, because a monitor
+# may also come back at the level it had before.
 restore_level = {d.restore_level}
 
 [backlight]
@@ -452,7 +493,8 @@ enabled = {_num(cfg.backlight_enabled)}
 # Name in /sys/class/backlight; empty = pick automatically.
 device = {cfg.backlight_device}
 # auto picks the desktop's own interface when there is one, so its brightness
-# slider stays in sync: mutter (GNOME 49+), kde (Plasma 6), then logind.
+# slider and keys keep working: gnome-shell or mutter (GNOME 49+),
+# kde (Plasma 6), then logind; sysfs needs write access.
 method = {cfg.backlight_method}
 # yes = a change made with the brightness keys holds until the next phase.
 follow_manual = {_num(cfg.backlight_follow_manual)}
