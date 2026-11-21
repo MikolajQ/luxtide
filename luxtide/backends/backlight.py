@@ -26,7 +26,7 @@ import os
 import threading
 import time
 
-from .. import clamp_level, paths
+from .. import clamp_level, paths, trace
 
 log = logging.getLogger(__name__)
 
@@ -314,6 +314,9 @@ class GnomeShellMethod:
             model = self._model()
             wanted = level / 100.0
             target = model.target_for(wanted)
+            trace.poke()
+            log.debug("shell target: level %d %%, scale %.4f -> target %.4f", level,
+                      model.scale, target)
             self.bus.call(self.BUS, self.PATH, self.BUS, "SetAutoBrightnessTarget", "(d)",
                           (target,))
             model.target = target
@@ -339,6 +342,8 @@ class GnomeShellMethod:
         if self._pending is not None:
             return False                  # a key press is on its way
         value = self.panel()
+        log.debug("shell check: panel %s, model scale %.4f target %.4f", value,
+                  self.model.scale, self.model.target)
         with self.lock:
             self.verified = True
             before = self.model.scale
@@ -374,24 +379,36 @@ class GnomeShellMethod:
                 return
             pending["timer"] = None
             after = self.panel()
+            landed = False
             if after is not None and self.model is not None:
                 with self.lock:
                     landed = self.model.keys_landed(pending["before"], after,
                                                     pending["presses"], self.eps)
-                if landed:
-                    finish(after)
-                    return
-            if self.clock() - pending["last"] >= self.SETTLE:
+            quiet = self.clock() - pending["last"]
+            log.debug("shell poll: panel %s (raw %s), before %.4f, presses %d, landed %s, "
+                      "quiet %.3f s", None if after is None else f"{after:.4f}",
+                      self.device.read_raw(), pending["before"], pending["presses"], landed,
+                      quiet)
+            if landed:
+                finish(after)
+                return
+            if quiet >= self.SETTLE:
                 finish(after)
                 return
             pending["timer"] = scheduler.timeout(self.POLL, poll)
 
         def on_signal(_args):
+            trace.poke()
             if self.model is None or self.model.target is None:
+                log.debug("shell signal before our first target")
                 # Not under our control yet; the scale is checked after
                 # our first target.
                 self.verified = False
                 return
+            log.debug("shell signal: %s, model scale %.4f target %.4f panel %.4f",
+                      "new" if self._pending is None else
+                      f"pending ({self._pending['presses']} so far)",
+                      self.model.scale, self.model.target, self.model.panel())
             if self._pending is None:
                 self._pending = {"before": self.model.panel(), "presses": 0, "timer": None}
             self._pending["presses"] += 1
@@ -498,7 +515,10 @@ class KdeMethod:
         "brightness_key" (seen on Plasma 6.8). Other sources, its own idle
         dimming among them, are left to the poll."""
         def on_signal(args):
-            display, value, _client, context = args
+            display, value, client, context = args
+            trace.poke()
+            log.debug("kde signal: %s %s from %s (%s), last %s", display, value, client,
+                      context or "-", self.last)
             if context != "brightness_key" or display != self.display_name or not self.last:
                 return
             previous, maximum = self.last
@@ -507,6 +527,7 @@ class KdeMethod:
                 direction = 1 if value > previous else -1
             else:
                 direction = 1 if value >= maximum else -1 if value <= 0 else 0
+            log.debug("kde keys: %s -> %s, direction %d", previous, value, direction)
             if direction:
                 handler(UserChange(clamp_level(value * 100.0 / maximum), direction, 1, True))
 
@@ -526,6 +547,9 @@ class KdeMethod:
         maximum = props.get("MaxBrightness", 100)
         # Plasma's 0 is "dimmest still visible", not off.
         value = max(0, min(maximum, round(maximum * level / 100.0)))
+        trace.poke()
+        log.debug("kde write: level %d %% -> %d of %d (was %s)", level, value, maximum,
+                  props.get("Brightness"))
         self.bus.call(self.BUS, path, self.DISPLAY, "SetBrightness", "(iu)",
                       (value, self.SUPPRESS_INDICATOR))
         self.last = (value, maximum)
@@ -709,6 +733,7 @@ class BacklightActuator:
             return True
         tried = []
         method = self.method or self.select()
+        trace.poke()
         while method is not None:
             try:
                 method.write(level)

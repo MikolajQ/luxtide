@@ -300,6 +300,8 @@ class Output:
             level = policy.step_level(base, change.direction, step, change.presses)
         else:
             level = change.level
+        log.debug("%s: user change %s, base %s (%s) -> %s", self.label, change, base,
+                  "held" if self.manual_hold is not None else "target", level)
         # The panel moved under us: write even when the level stays the same,
         # say a press of "brighter" at 100 %.
         self.applied = None
@@ -333,6 +335,8 @@ class Output:
             self.desktop_dimmed = True
             return None
         self.desktop_dimmed = False
+        log.debug("%s: read %s while %s was applied, idle %s ms: taken as manual",
+                  self.label, value, self.applied, idle)
         self.applied = value
         return value
 

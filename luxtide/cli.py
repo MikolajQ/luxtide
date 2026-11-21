@@ -457,6 +457,12 @@ def setup_daemon_logging(verbose):
 
 def cmd_daemon(args):
     setup_daemon_logging(args.verbose)
+    if not args.dry_run:
+        # TEMPORARY: trace the brightness keys on laptops (see trace.py).
+        from . import trace
+        device = displays.pick_backlight(displays.list_backlights())
+        if device is not None:
+            trace.start(str(device.path), args.verbose)
     from .daemon import Daemon
     return Daemon(dry_run=args.dry_run, tray=not args.no_tray).run()
 

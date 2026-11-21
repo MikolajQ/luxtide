@@ -19,7 +19,7 @@ from gi.repository import Gio, GLib
 
 from . import (BUS_NAME, INTERFACE, OBJECT_PATH, __version__, clamp_level,
                config as config_module, displays, locate, paths, policy, sdnotify,
-               weather)
+               trace, weather)
 from .backends import shell_state
 from .backends.backlight import (DESKTOP_NAMES, BacklightActuator, _Bus, _ScaleStore,
                                  session_idle_ms)
@@ -401,6 +401,7 @@ class Daemon:
             return
         level = output.user_change(change, self.cfg.step)
         if level is None:
+            log.debug("%s: %s ignored", output.label, change)
             return
         until = policy.resolve_until(policy.NEXT_PHASE, time.time(), self.schedule)
         output.hold_manual(level, until)
@@ -1036,6 +1037,8 @@ class Daemon:
             sdnotify.ready()                # a clean exit, not a failed start
             return 0
         self._preset_shell()                # before the desktop may start
+        self._trace_monitor = trace.watch_shell_state(shell_state.state_path(),
+                                                      shell_state.read)
         self._export()
         sdnotify.ready()                    # on a laptop the desktop waited for this
         self.tick()
