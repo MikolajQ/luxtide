@@ -11,10 +11,15 @@ license=('MIT')
 conflicts=('ddc-sun-dimmer')
 replaces=('ddc-sun-dimmer')
 depends=('gtk4' 'python' 'python-gobject')
+# Part of base-devel, listed for machines without it.
+makedepends=('fakeroot' 'make')
 optdepends=('ddcutil: external monitors over DDC/CI'
             'gnome-shell-extension-appindicator: tray icon on GNOME'
             'geoclue: find the location automatically'
             'libshumate: map in the location window')
+# Python only, no binaries: nothing to strip, no debug package, and no need
+# for strip or debugedit at build time.
+options=('!strip' '!debug')
 install=$pkgname.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 # Placeholder until v$pkgver is tagged and public; then run updpkgsums.
