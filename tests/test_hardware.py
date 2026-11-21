@@ -358,8 +358,10 @@ class GnomeShell(unittest.TestCase):
         for _ in range(2):                                  # a held key: two presses
             self.bus.emit(backlight.GnomeShellMethod.PATH, "BrightnessChanged")
         self.shell_writes(0.40)
+        self.actuator.method.clock = lambda: float("inf")    # long quiet since
         scheduler.run()
-        self.assertEqual(changes, [backlight.UserChange(40, -1, 2, True)])
+        # A held key keeps the shell's step instead of jumping back after it.
+        self.assertEqual(changes, [backlight.UserChange(40, -1, 2, False)])
         self.assertAlmostEqual(self.store.load("amdgpu_bl1"), 0.4, places=5)
         self.actuator.write(41)
         self.assertAlmostEqual(self.last_target(), 0.51)
@@ -373,14 +375,16 @@ class GnomeShell(unittest.TestCase):
         self.actuator.watch(scheduler, changes.append)
         return changes, scheduler
 
-    def test_key_press_counts_the_moment_it_lands(self):
+    def test_key_press_waits_until_the_shell_is_done(self):
         changes, scheduler = self.watched(0.5, 50)
         self.shell_writes(0.50)
         self.bus.emit(backlight.GnomeShellMethod.PATH, "BrightnessChanged")
         scheduler.step()                    # not in sysfs yet
-        self.assertEqual(changes, [])
         self.clock.now += 0.015
         self.shell_writes(0.55)
+        scheduler.step()                    # there, but the shell's write is young
+        self.assertEqual(changes, [])
+        self.clock.now += 0.14
         scheduler.step()
         self.assertEqual(changes, [backlight.UserChange(55, 1, 1, True)])
         self.assertEqual(scheduler.pending, {})

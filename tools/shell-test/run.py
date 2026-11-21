@@ -113,11 +113,17 @@ steps = [
     (4.6, lambda: expect("status: level from the keys", daemon.status()["keys_level"], 25)),
     (4.6, lambda: expect("status: schedule unchanged", daemon.status()["level"], 30)),
     (5.0, lambda: (press(1), press(1))),
-    (6.0, lambda: expect("two presses up: 25 -> 30 -> 36", panel(), 0.36)),
+    (6.0, lambda: expect("two quick presses keep the shell's step: 25 -> 35", panel(), 0.35)),
     (6.5, lambda: shell["proc"].terminate()),
     (7.5, lambda: start_shell(initial + 0.05)),   # restarted: its saved scale
-    (9.5, lambda: expect("after a shell restart", panel(), 0.36)),
-    (10.0, daemon.quit),
+    (9.5, lambda: expect("after a shell restart", panel(), 0.35)),
+    # Our step differs from the shell's: the correction must not race the
+    # shell's own write (which left a laptop's panel at its minimum).
+    (10.0, lambda: press(-1)),
+    (10.6, lambda: expect("one press down: 35 -> 29, not the shell's 30", panel(), 0.29)),
+    (11.0, lambda: press(1)),
+    (11.6, lambda: expect("one press up: 29 -> 35, not the shell's 34", panel(), 0.35)),
+    (12.0, daemon.quit),
 ]
 for at, step in steps:
     GLib.timeout_add(int(at * 1000), lambda s=step: (s(), False)[1])

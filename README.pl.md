@@ -218,8 +218,10 @@ wskaźnik na ekranie i przygaszanie przy bezczynności pozostają spójne:
 | KDE Plasma 6 | `org.kde.ScreenBrightness` |
 | pozostałe (sway, Hyprland, niri, XFCE…) | logind `Session.SetBrightness` |
 
-GNOME i Plasma zgłaszają naciśnięcia klawiszy jasności. Luxtide zastępuje
-krok pulpitu (5 %) własnym i trzyma wynik do następnej fazy dnia. Zasobnik
+GNOME i Plasma zgłaszają naciśnięcia klawiszy jasności. Przy pojedynczym
+naciśnięciu Luxtide zastępuje krok pulpitu (5 %) własnym i trzyma wynik do
+następnej fazy dnia; krok pulpitu widać przez chwilę (w GNOME ok. 0,15 s).
+Przytrzymany klawisz albo kilka szybkich naciśnięć zachowuje kroki pulpitu. Zasobnik
 i okno ustawień pokazują wtedy ten poziom jako ręczny, z *Back to schedule*. Zmiana
 w czasie bezczynności to przygaszanie pulpitu, którego Luxtide nie rusza.
 W GNOME wskaźnik na ekranie pokazuje skalę powłoki, a nie faktyczną jasność.

@@ -40,7 +40,8 @@ class UserChange:
     level: int            # what the panel shows now, in percent
     direction: int        # +1 brighter, -1 dimmer, 0 unknown
     presses: int          # key presses counted, for a held key
-    keys: bool            # True: brightness keys; False: a slider
+    keys: bool            # True: one press, to be replaced by our own step;
+                          # False: a slider or a held key, taken as it is
 
 
 def percent_to_raw(level, maximum, minimum=0):
@@ -241,12 +242,21 @@ class GnomeShellMethod:
     PATH = "/org/gnome/Shell/Brightness"
     events = True
     # After the signal the panel is read every POLL seconds. A key press
-    # counts as soon as the panel shows its step, which takes a few
-    # milliseconds (the shell writes through Mutter and logind); until then
-    # the panel shows the shell's own 5 % step, past ours. Anything else, a
-    # slider being dragged or a press that changes nothing visible, waits
-    # for SETTLE seconds without signals.
+    # counts once the panel shows its step and no signal came for QUIET
+    # seconds; a slider being dragged or a press that changes nothing
+    # visible, after SETTLE seconds without signals.
+    #
+    # QUIET is not about us. The shell sets the backlight through Mutter,
+    # which writes it asynchronously; when the write is confirmed and the
+    # shell has set another value meanwhile, it takes the confirmed one for
+    # a change from outside and makes it its scale (syncWithBacklight in
+    # brightnessManager.js). Under an automatic target that scale is an
+    # offset, so the panel lands somewhere else entirely, often at its
+    # minimum, until the next key press. Our correction, sent 15 ms after
+    # the key, did exactly that on a laptop in 17 of some 50 presses. So it
+    # waits until the shell is long done with its own write.
     POLL = 0.015
+    QUIET = 0.15
     SETTLE = 0.3
 
     def __init__(self, device, bus, store=None, clock=time.monotonic):
@@ -371,7 +381,11 @@ class GnomeShellMethod:
                       "%d signal(s), direction %d, %s, scale now %.3f", before, after,
                       presses, direction, "keys" if keys else "slider", scale)
             if direction:
-                handler(UserChange(clamp_level(after * 100), direction, presses, keys))
+                # One press gets our own step. Several in a row, a held key,
+                # keep the shell's: replacing them only once the key is let go
+                # would make the panel jump back from where the user stopped.
+                handler(UserChange(clamp_level(after * 100), direction, presses,
+                                   keys and presses == 1))
 
         def poll():
             pending = self._pending
@@ -389,10 +403,7 @@ class GnomeShellMethod:
                       "quiet %.3f s", None if after is None else f"{after:.4f}",
                       self.device.read_raw(), pending["before"], pending["presses"], landed,
                       quiet)
-            if landed:
-                finish(after)
-                return
-            if quiet >= self.SETTLE:
+            if quiet >= self.SETTLE or (landed and quiet >= self.QUIET):
                 finish(after)
                 return
             pending["timer"] = scheduler.timeout(self.POLL, poll)

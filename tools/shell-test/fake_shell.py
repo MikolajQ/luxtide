@@ -24,7 +24,10 @@ if sys.argv[2] == "saved":
 else:
     scale = float(sys.argv[2])
 LOW, HIGH = 4000, 400000
-state = {"scale": scale, "target": -1.0, "dim": False}
+# "global" is what the keys move, "monitor" what the panel follows; they part
+# only through the misreading below.
+state = {"global": scale, "monitor": scale, "target": -1.0, "dim": False, "current": None}
+WRITE_MS, CONFIRM_MS = 8, 30
 
 XML = """
 <node>
@@ -44,13 +47,41 @@ XML = """
 </node>"""
 
 
-def sync():
-    s, t = state["scale"], state["target"]
+def write_sysfs(panel):
+    with open(path, "w") as handle:
+        handle.write(f"{int(LOW + (HIGH - LOW) * panel)}\n")
+    return False
+
+
+def confirmed(panel):
+    # Mutter confirms each write asynchronously. A confirmed value other than
+    # the one the shell set last is taken for a change from outside and made
+    # the monitor's scale (syncWithBacklight), as seen on a laptop.
+    if state["current"] is not None and abs(panel - state["current"]) > 1e-9:
+        print(f"fake shell: confirmed {panel:.3f} after {state['current']:.3f}; "
+              f"the scale becomes {panel:.3f}", flush=True)
+        state["monitor"] = panel
+        sync(immediately=True)      # one misreading per write, no endless echo
+    return False
+
+
+def set_backlight(panel, immediately=False):
+    if state["current"] is not None and abs(panel - state["current"]) < 1e-9:
+        return
+    state["current"] = panel
+    if immediately:
+        write_sysfs(panel)
+    else:
+        GLib.timeout_add(WRITE_MS, write_sysfs, panel)
+        GLib.timeout_add(CONFIRM_MS, confirmed, panel)
+
+
+def sync(immediately=False):
+    s, t = state["monitor"], state["target"]
     panel = s if t < 0 else min(1.0, max(0.0, t + s - 0.5))
     if state["dim"]:
         panel = min(0.3, panel)
-    with open(path, "w") as handle:
-        handle.write(f"{int(LOW + (HIGH - LOW) * panel)}\n")
+    set_backlight(panel, immediately)
 
 
 def method(conn, sender, obj, iface, name, params, inv):
@@ -63,15 +94,15 @@ def method(conn, sender, obj, iface, name, params, inv):
         state["dim"] = args[0]
         sync()
     elif name == "Press":
-        # The shell emits the signal right after asking Mutter for the new
-        # backlight, which reaches sysfs a few milliseconds later, through
-        # logind.
-        state["scale"] = min(1.0, max(0.0, state["scale"] + args[0] / 20))
+        # The keys move the global scale, which the monitor follows; the
+        # signal comes right after the backlight was asked for.
+        state["global"] = min(1.0, max(0.0, state["global"] + args[0] / 20))
+        state["monitor"] = state["global"]
+        sync()
         conn.emit_signal(None, "/org/gnome/Shell/Brightness", "org.gnome.Shell.Brightness",
                          "BrightnessChanged", None)
-        GLib.timeout_add(8, lambda: (sync(), False)[1])
     elif name == "Scale":
-        inv.return_value(GLib.Variant("(d)", (state["scale"],)))
+        inv.return_value(GLib.Variant("(d)", (state["global"],)))
         return
     inv.return_value(None)
 
@@ -91,7 +122,7 @@ node = Gio.DBusNodeInfo.new_for_xml(XML)
 bus.register_object("/org/gnome/Shell/Brightness", node.interfaces[0], method, prop, None)
 bus.register_object("/org/gnome/Mutter/DisplayConfig", node.interfaces[1], method, prop, None)
 bus.register_object("/test", node.interfaces[2], method, prop, None)
-sync()          # what the shell does at start: the saved scale
+sync(immediately=True)          # what the shell does at start: the saved scale
 with open(path + ".start", "w") as handle:
     handle.write(f"{scale}\n")
 for name in ("org.gnome.Mutter.DisplayConfig", "org.gnome.Shell.Brightness", "test.Shell"):
