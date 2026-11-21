@@ -37,12 +37,12 @@ pkgver() {
 
 check() {
   cd "$_name"
-  python -m unittest discover -s tests
+  python -m unittest discover -s tests -q
 }
 
 package() {
   cd "$_name"
-  make DESTDIR="$pkgdir" PREFIX=/usr install
+  make -s DESTDIR="$pkgdir" PREFIX=/usr install
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$_name/"
   # make install puts the licence under the plain name.
   ln -s "$_name" "$pkgdir/usr/share/licenses/$pkgname"

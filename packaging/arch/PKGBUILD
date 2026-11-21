@@ -28,12 +28,12 @@ sha256sums=('SKIP')
 
 check() {
   cd "$pkgname-$pkgver"
-  python -m unittest discover -s tests
+  python -m unittest discover -s tests -q
 }
 
 package() {
   cd "$pkgname-$pkgver"
-  make DESTDIR="$pkgdir" PREFIX=/usr install
+  make -s DESTDIR="$pkgdir" PREFIX=/usr install
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
 
   # The modules live in a private directory that users cannot write to, so

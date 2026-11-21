@@ -71,13 +71,18 @@ def wait(actuator, count):
     time.sleep(0.02)
 
 
+def settle():
+    """Give the write thread time for a write that must not happen."""
+    time.sleep(0.15)
+
+
 class Writing(unittest.TestCase):
     def test_writes_once_per_change(self):
         output, _, clock = make()
         output.ensure(40, clock())
         wait(output.actuator, 1)
         output.ensure(40, clock())
-        wait(output.actuator, 2)
+        settle()
         self.assertEqual(output.actuator.writes, [(40, None)])
         self.assertEqual(output.applied, 40)
         output.close()
@@ -97,7 +102,7 @@ class Writing(unittest.TestCase):
         wait(actuator, 1)
         self.assertEqual(output.fails, 1)
         output.ensure(40, clock() + 30)          # inside the back-off: no write
-        wait(actuator, 2)
+        settle()
         self.assertEqual(len(actuator.writes), 1)
         output.ensure(40, clock() + 61)
         wait(actuator, 2)
@@ -111,12 +116,12 @@ class Writing(unittest.TestCase):
         output.ensure(100, clock())
         wait(output.actuator, 1)
         output.ensure(100, clock() + 3600)
-        wait(output.actuator, 2)
+        settle()
         self.assertEqual(len(output.actuator.writes), 1)
         output.ensure(30, clock())
         wait(output.actuator, 2)
         output.ensure(30, output.last_write + 299)
-        wait(output.actuator, 3)
+        settle()
         self.assertEqual(len(output.actuator.writes), 2)
         output.ensure(30, output.last_write + 300)
         wait(output.actuator, 3)
@@ -198,7 +203,7 @@ class BrightnessKeys(unittest.TestCase):
         self.assertIsNone(self.output.check_manual(lambda: 60000))
         self.assertTrue(self.output.desktop_dimmed)
         self.output.ensure(80, self.clock())
-        wait(self.actuator, 2)
+        settle()
         self.assertEqual(len(self.actuator.writes), 1)      # no fight with the desktop
         self.actuator.value = 60
         self.assertIsNone(self.output.check_manual(lambda: 100))

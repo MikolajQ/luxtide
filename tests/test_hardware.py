@@ -2,8 +2,10 @@
 
 import os
 import pathlib
+import shutil
 import tempfile
 import unittest
+import weakref
 
 from helpers import edid
 from luxtide import displays
@@ -13,8 +15,8 @@ from luxtide.config import DdcSettings
 
 class FakeSysfs:
     def __init__(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = pathlib.Path(self.tmp.name)
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        weakref.finalize(self, shutil.rmtree, self.root, True)
         self.drm = self.root / "drm"
         self.backlight = self.root / "backlight"
         self.drm.mkdir()

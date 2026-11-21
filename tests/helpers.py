@@ -1,11 +1,15 @@
 """Shared test fixtures."""
 
+import logging
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from luxtide import config  # noqa: E402
+
+# Without a handler Python prints warnings to stderr; assertLogs still works.
+logging.getLogger("luxtide").addHandler(logging.NullHandler())
 
 WARSAW = """\
 [location]
