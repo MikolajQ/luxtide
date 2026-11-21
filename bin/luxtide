@@ -8,6 +8,11 @@ _root = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__))
 if os.path.isdir(os.path.join(_root, "luxtide")):
     sys.path.insert(0, _root)
 
+if sys.argv[1:2] == ["daemon"]:
+    # Before anything heavy: the desktop may be waiting for us (see sdnotify).
+    from luxtide import sdnotify  # noqa: E402
+    sdnotify.early_ready()
+
 from luxtide.cli import luxtide_main  # noqa: E402
 
 sys.exit(luxtide_main(sys.argv[1:]))

@@ -18,7 +18,8 @@ import time
 from gi.repository import Gio, GLib
 
 from . import (BUS_NAME, INTERFACE, OBJECT_PATH, __version__, clamp_level,
-               config as config_module, displays, locate, paths, policy, weather)
+               config as config_module, displays, locate, paths, policy, sdnotify,
+               weather)
 from .backends.backlight import DESKTOP_NAMES, BacklightActuator, _Bus, session_idle_ms
 from .backends.ddc import DdcActuator
 from .curve import Schedule
@@ -997,8 +998,10 @@ class Daemon:
         self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         if self._already_running():
             log.info("already running, nothing to do")
+            sdnotify.ready()                # a clean exit, not a failed start
             return 0
         self._export()
+        sdnotify.ready()                    # on a laptop the desktop waited for this
         self.tick()
         self.rescan(initial=True)
         self.tick()

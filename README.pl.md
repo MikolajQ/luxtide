@@ -139,7 +139,8 @@ Pod systemd wpis uruchamia jednostkę użytkownika `luxtide` i włącza ją tak,
 by od następnego logowania startowała razem z wczesnymi usługami sesji,
 jeszcze przed powłoką pulpitu. Laptop odtwarza przy starcie jasność
 z poprzedniej sesji, a Luxtide poprawia ją od razu, gdy tylko pojawi się
-interfejs jasności pulpitu.
+interfejs jasności pulpitu. Pulpit czeka na Luxtide tylko na laptopie, kilka
+dziesiątych sekundy; na pozostałych komputerach startuje od razu.
 
 sway, Hyprland i niri nie czytają wpisów autostartu: uruchom
 `luxtide autostart` z ich konfiguracji.

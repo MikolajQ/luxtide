@@ -147,7 +147,9 @@ before the desktop shell rather than after it. A laptop's desktop restores
 the brightness of the previous session as it comes up; starting first, the
 daemon corrects it the moment the desktop's brightness interface appears,
 instead of seconds later. For the first 30 seconds it also watches the panels
-closely, to catch them lighting up.
+closely, to catch them lighting up. The desktop waits for the daemon only on a
+laptop, until it is on the bus, a few tenths of a second; elsewhere the
+daemon reports ready as soon as it starts, and the desktop does not wait.
 
 sway, Hyprland and niri do not read login entries: run
 `luxtide autostart` from their configuration, or

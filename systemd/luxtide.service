@@ -6,15 +6,21 @@ Documentation=man:ddcutil(1)
 # as it comes up, and the sooner we are there, the shorter that lasts. The
 # daemon waits for the desktop's brightness interface by itself. Started
 # from the login entry instead (not enabled), it comes after the desktop.
+#
+# graphical-session-pre.target waits for the units it wants, and with them
+# the desktop: on a laptop until the daemon is on the bus, a few tenths of a
+# second; elsewhere only until it has started (see luxtide/sdnotify.py).
 PartOf=graphical-session.target
 # Earlier versions, under the old name ddc-sun-dimmer, must never run next to
 # this one: the daemon of version 2 and the timer and watcher of version 1.
 Conflicts=ddc-sun-dimmer.service ddc-sun-dimmer.timer ddc-sun-dimmer-watch.service
 
 [Service]
-Type=dbus
+Type=notify
 BusName=io.github.MikolajQ.Luxtide
 ExecStart=@BINDIR@/luxtide daemon
+# Never hold the desktop up for long, whatever happens at start.
+TimeoutStartSec=15s
 Restart=on-failure
 RestartSec=5s
 
