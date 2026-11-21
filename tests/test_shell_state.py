@@ -52,6 +52,14 @@ class Preset(unittest.TestCase):
         self.assertAlmostEqual(self.preset(100), 0.5)
         self.assertEqual(shell_state.start_scale(40), 0.4)
 
+    def test_saved_scale_is_the_last_entry_of_the_connector(self):
+        self.assertIsNone(shell_state.saved_scale("eDP-1", self.path))      # no file
+        old_panel = ("AUO", "0x1234", "0x00000000", "default", "eDP-1", 0.9)
+        self.save(old_panel, EXTERNAL, PANEL)
+        self.assertAlmostEqual(shell_state.saved_scale("eDP-1", self.path), 0.55)
+        self.assertAlmostEqual(shell_state.saved_scale("DP-1", self.path), 0.8)
+        self.assertIsNone(shell_state.saved_scale("eDP-2", self.path))
+
     def test_never_behind_a_running_shell(self):
         self.save(PANEL)
         before = self.path.read_bytes()

@@ -27,6 +27,7 @@ import threading
 import time
 
 from .. import clamp_level, paths, trace
+from . import shell_state
 
 log = logging.getLogger(__name__)
 
@@ -258,18 +259,37 @@ class GnomeShellMethod:
     POLL = 0.015
     QUIET = 0.15
     SETTLE = 0.3
+    # The shell saves its scale 300 ms after every change by the user, and
+    # after a change of monitors (shell_state.saved_scale). That is the only
+    # word on the scale when the panel cannot show it: brightness down held
+    # to the bottom and brightness up pressed right after leave the panel at
+    # its minimum either way, and taking it for the former made the next
+    # press jump on a laptop (1 % -> 6 % -> 11 %). A save that comes sooner
+    # than SAVED_AFTER after a signal is the one of an earlier change (they
+    # came up to 0.17 s after a signal; the save of the latest press 0.30 to
+    # 0.41 s after it). A correction waits AFTER_WRITE after our last target,
+    # and after a press was reported (the new level follows), so as not to
+    # set off the shell's misreading described above.
+    SAVED_AFTER = 0.25
+    AFTER_WRITE = 0.1
 
-    def __init__(self, device, bus, store=None, clock=time.monotonic):
+    def __init__(self, device, bus, store=None, clock=time.monotonic, saved=None):
         self.device = device
         self.bus = bus
         self.store = store or _ScaleStore()
         self.clock = clock
+        self.saved = saved or shell_state.state_path()
         self.lock = threading.Lock()
         self.model = None
         self.limits = None
         self.verified = False
         self.note = ""
         self._pending = None
+        self._level = None            # the level our target is for
+        self._written = None          # when it was sent
+        self._last_signal = None
+        self._scheduler = None
+        self._retry = None
 
     def available(self):
         try:
@@ -321,23 +341,67 @@ class GnomeShellMethod:
 
     def write(self, level):
         with self.lock:
-            model = self._model()
-            wanted = level / 100.0
-            target = model.target_for(wanted)
-            trace.poke()
-            log.debug("shell target: level %d %%, scale %.4f -> target %.4f", level,
-                      model.scale, target)
-            self.bus.call(self.BUS, self.PATH, self.BUS, "SetAutoBrightnessTarget", "(d)",
-                          (target,))
-            model.target = target
-            note = ""
-            if wanted < model.lowest() - self.eps:
-                note = (f"GNOME's brightness setting keeps the panel at "
-                        f"{clamp_level(model.lowest() * 100)} % or more; "
-                        f"press brightness down to go lower")
-            if note and note != self.note:
-                log.warning("%s", note)
-            self.note = note
+            self._send(self._model(), level)
+
+    def _send(self, model, level):
+        """Set the target that shows `level`. Call with the lock held."""
+        wanted = level / 100.0
+        target = model.target_for(wanted)
+        trace.poke()
+        log.debug("shell target: level %d %%, scale %.4f -> target %.4f", level,
+                  model.scale, target)
+        self.bus.call(self.BUS, self.PATH, self.BUS, "SetAutoBrightnessTarget", "(d)",
+                      (target,))
+        model.target = target
+        self._level, self._written = level, self.clock()
+        note = ""
+        if wanted < model.lowest() - self.eps:
+            note = (f"GNOME's brightness setting keeps the panel at "
+                    f"{clamp_level(model.lowest() * 100)} % or more; "
+                    f"press brightness down to go lower")
+        if note and note != self.note:
+            log.warning("%s", note)
+        self.note = note
+
+    def saved_changed(self):
+        """The shell saved its scale. When it is not ours, take it and set
+        the target again for the same level. Runs in the main loop; True
+        when the scale was corrected."""
+        if self._retry is not None and self._scheduler is not None:
+            self._scheduler.cancel(self._retry)
+        self._retry = None
+        model = self.model
+        if model is None or model.target is None or self._level is None:
+            return False
+        connector = self.device.connector.short if self.device.connector else None
+        if connector is None:
+            return False
+        now = self.clock()
+        if self._last_signal is not None and now - self._last_signal < self.SAVED_AFTER:
+            return False                  # an earlier change; the latest is still to come
+        if self._pending is not None or now - self._written < self.AFTER_WRITE:
+            # A press on its way, or our target just sent: look again soon.
+            if self._scheduler is not None:
+                self._retry = self._scheduler.timeout(self.AFTER_WRITE, self.saved_changed)
+            return False
+        saved = shell_state.saved_scale(connector, self.saved)
+        if saved is None:
+            return False
+        with self.lock:
+            before = model.scale
+            log.debug("shell saved scale %.4f, model %.4f", saved, before)
+            if abs(saved - before) <= max(2 * self.eps, 0.001):
+                return False
+            log.info("GNOME saved its brightness scale as %.0f %%, not %.0f %%; correcting",
+                     saved * 100, before * 100)
+            model.scale = saved
+            try:
+                self._send(model, self._level)
+            except Exception as error:
+                log.debug("could not set the corrected target: %s", error)
+        self.verified = True
+        self.store.save(self.device.name, saved)
+        return True
 
     def read(self):
         value = self.panel()
@@ -369,6 +433,9 @@ class GnomeShellMethod:
         def finish(after):
             before, presses = self._pending["before"], self._pending["presses"]
             self._pending = None
+            # The daemon sets the new level right away, from another thread:
+            # a correction from the saved scale waits as after a target.
+            self._written = self.clock()
             if after is None or self.model is None:
                 return
             with self.lock:
@@ -427,12 +494,41 @@ class GnomeShellMethod:
             if self._pending is None:
                 self._pending = {"before": self.model.panel(), "presses": 0, "timer": None}
             self._pending["presses"] += 1
-            self._pending["last"] = self.clock()
+            self._pending["last"] = self._last_signal = self.clock()
             if self._pending["timer"] is None:
                 self._pending["timer"] = scheduler.timeout(self.POLL, poll)
 
-        return self.bus.subscribe(self.BUS, self.BUS, "BrightnessChanged", self.PATH,
-                                  on_signal)
+        self._scheduler = scheduler
+        unsubscribe = self.bus.subscribe(self.BUS, self.BUS, "BrightnessChanged", self.PATH,
+                                         on_signal)
+        monitor = self._watch_saved()
+
+        def stop():
+            unsubscribe()
+            if monitor is not None:
+                monitor.cancel()
+            if self._retry is not None:
+                scheduler.cancel(self._retry)
+                self._retry = None
+        return stop
+
+    def _watch_saved(self):
+        """Call saved_changed whenever the shell saves its scale."""
+        try:
+            from gi.repository import Gio
+            monitor = Gio.File.new_for_path(str(self.saved)).monitor_file(
+                Gio.FileMonitorFlags.WATCH_MOVES, None)
+        except Exception as error:
+            log.debug("cannot watch the shell's saved brightness: %s", error)
+            return None
+        events = (Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED,
+                  Gio.FileMonitorEvent.RENAMED, Gio.FileMonitorEvent.MOVED_IN)
+
+        def changed(_monitor, _file, _other, event):
+            if event in events:
+                self.saved_changed()
+        monitor.connect("changed", changed)
+        return monitor
 
     def release(self):
         """Hand the backlight back to the shell's own scale."""

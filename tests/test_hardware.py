@@ -6,7 +6,9 @@ import shutil
 import tempfile
 import unittest
 import weakref
+from unittest import mock
 
+from gi.repository import GLib
 from helpers import edid
 from luxtide import displays
 from luxtide.backends import backlight
@@ -302,6 +304,9 @@ class GnomeShell(unittest.TestCase):
         fs = self.fs = FakeSysfs()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        environ = mock.patch.dict(os.environ, {"XDG_DATA_HOME": self.tmp.name})
+        environ.start()
+        self.addCleanup(environ.stop)
         self.path = fs.device("amdgpu_bl1", "raw", 400000, 166000)      # scale 0.4091
         connector = displays.Connector("card1-eDP-1", fs.connector("card1-eDP-1"), True, None)
         self.device = displays.BacklightDevice("amdgpu_bl1", self.path, "raw", 400000,
@@ -320,6 +325,13 @@ class GnomeShell(unittest.TestCase):
         """What the shell does with the target: set the panel."""
         raw = round(4000 + 396000 * relative)
         (self.path / "brightness").write_text(f"{raw}\n")
+
+    def shell_saves(self, scale):
+        """What the shell does 300 ms after a change by the user."""
+        path = pathlib.Path(self.tmp.name) / "gnome-shell" / "brightnesses"
+        path.parent.mkdir(exist_ok=True)
+        entries = [("BOE", "0x0b0e", "0x00000000", "default", "eDP-1", scale)]
+        path.write_bytes(GLib.Variant("a(sssssd)", entries).get_data_as_bytes().get_data())
 
     def last_target(self):
         name, path, method, args = self.bus.calls[-1]
@@ -370,8 +382,9 @@ class GnomeShell(unittest.TestCase):
         changes = []
         scheduler = FakeScheduler()
         self.store.save("amdgpu_bl1", scale)
-        self.actuator.write(level)
+        self.actuator.select()
         self.actuator.method.clock = self.clock
+        self.actuator.write(level)
         self.actuator.watch(scheduler, changes.append)
         return changes, scheduler
 
@@ -421,6 +434,56 @@ class GnomeShell(unittest.TestCase):
         self.clock.now += 0.31
         scheduler.run()
         self.assertEqual(changes, [backlight.UserChange(3, -1, 2, True)])
+
+    def test_saved_scale_settles_a_press_the_panel_did_not_show(self):
+        changes, scheduler = self.watched(0.4, 10)
+        self.shell_writes(0.0)
+        # Down held past the bottom, then up at once: the shell's scale goes
+        # 0.4 -> 0.15 -> 0.2, the panel stays at its minimum all along.
+        for _ in range(6):
+            self.bus.emit(backlight.GnomeShellMethod.PATH, "BrightnessChanged")
+            self.clock.now += 0.05
+        self.clock.now += 0.25
+        scheduler.run()
+        self.assertEqual(changes, [backlight.UserChange(1, -1, 6, False)])
+        self.actuator.write(1)                              # what the daemon does with it
+        self.assertAlmostEqual(self.last_target(), 0.41)    # for a scale of 0.1
+        self.shell_saves(0.2)
+        method = self.actuator.method
+        self.assertFalse(method.saved_changed())            # our target is fresh: soon
+        self.clock.now += 0.15
+        scheduler.run()
+        self.assertAlmostEqual(self.last_target(), 0.31)
+        self.assertAlmostEqual(self.store.load("amdgpu_bl1"), 0.2, places=5)
+        self.assertEqual(scheduler.pending, {})
+
+    def test_save_of_an_earlier_press_is_not_taken(self):
+        changes, scheduler = self.watched(0.5, 50)
+        method = self.actuator.method
+        self.clock.now += 1.0
+        self.shell_writes(0.55)
+        self.bus.emit(backlight.GnomeShellMethod.PATH, "BrightnessChanged")
+        self.shell_saves(0.45)                  # from the press before, saved late
+        self.clock.now += 0.1
+        self.assertFalse(method.saved_changed())
+        self.clock.now += 0.1
+        scheduler.run()
+        self.assertEqual(changes, [backlight.UserChange(55, 1, 1, True)])
+        calls = len(self.bus.calls)
+        self.assertFalse(method.saved_changed())
+        self.clock.now += 0.15
+        self.shell_saves(0.55)                  # this press
+        self.assertFalse(method.saved_changed())
+        self.assertEqual(len(self.bus.calls), calls)
+        self.assertEqual(scheduler.pending, {})
+
+    def test_saved_scale_after_a_shell_restart_is_taken(self):
+        changes, scheduler = self.watched(0.5, 50)
+        self.clock.now += 1.0
+        self.shell_saves(0.75)
+        self.assertTrue(self.actuator.method.saved_changed())
+        self.assertAlmostEqual(self.last_target(), 0.25)
+        self.assertEqual(changes, [])
 
     def test_signals_before_our_first_target_are_not_reported(self):
         changes = []

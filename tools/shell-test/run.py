@@ -123,7 +123,16 @@ steps = [
     (10.6, lambda: expect("one press down: 35 -> 29, not the shell's 30", panel(), 0.29)),
     (11.0, lambda: press(1)),
     (11.6, lambda: expect("one press up: 29 -> 35, not the shell's 34", panel(), 0.35)),
-    (12.0, daemon.quit),
+    # Brightness down held past the bottom, then brightness up at once: the
+    # panel stays at its minimum either way, so only the scale the shell
+    # saves tells the up press from one more down (the next press jumped
+    # 1 % -> 6 % -> 11 % on a laptop).
+    *[(12.0 + 0.06 * i, lambda: press(-1)) for i in range(11)],
+    (12.68, lambda: press(1)),
+    (13.6, lambda: expect("held down to the bottom, then up: 1 %", panel(), 0.01)),
+    (14.0, lambda: press(1)),
+    (14.6, lambda: expect("the next press up is our step: 1 -> 2", panel(), 0.02)),
+    (15.0, daemon.quit),
 ]
 for at, step in steps:
     GLib.timeout_add(int(at * 1000), lambda s=step: (s(), False)[1])

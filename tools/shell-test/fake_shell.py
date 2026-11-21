@@ -8,6 +8,8 @@ presses keys: test.Press(i direction).
 
 "saved" reads the scale of eDP-1 from $XDG_DATA_HOME/gnome-shell/brightnesses,
 as the shell does. The panel it starts at goes to SYSFS_BRIGHTNESS_FILE.start.
+Like the shell, it saves its scale there 300 ms after it starts and after
+every press.
 """
 import os
 import sys
@@ -15,18 +17,24 @@ import sys
 from gi.repository import Gio, GLib
 
 path = sys.argv[1]
-if sys.argv[2] == "saved":
-    saved = os.path.join(os.environ["XDG_DATA_HOME"], "gnome-shell", "brightnesses")
+saved = os.path.join(os.environ["XDG_DATA_HOME"], "gnome-shell", "brightnesses")
+STATE = GLib.VariantType("a(sssssd)")
+
+
+def load():
     with open(saved, "rb") as handle:
-        entries = GLib.Variant.new_from_bytes(GLib.VariantType("a(sssssd)"),
-                                              GLib.Bytes.new(handle.read()), False).unpack()
-    scale = next(entry[5] for entry in entries if entry[4] == "eDP-1")
+        return GLib.Variant.new_from_bytes(STATE, GLib.Bytes.new(handle.read()), False).unpack()
+
+
+if sys.argv[2] == "saved":
+    scale = next(entry[5] for entry in load() if entry[4] == "eDP-1")
 else:
     scale = float(sys.argv[2])
 LOW, HIGH = 4000, 400000
 # "global" is what the keys move, "monitor" what the panel follows; they part
 # only through the misreading below.
-state = {"global": scale, "monitor": scale, "target": -1.0, "dim": False, "current": None}
+state = {"global": scale, "monitor": scale, "target": -1.0, "dim": False, "current": None,
+         "save": 0}
 WRITE_MS, CONFIRM_MS = 8, 30
 
 XML = """
@@ -84,6 +92,29 @@ def sync(immediately=False):
     set_backlight(panel, immediately)
 
 
+def save_now():
+    # _saveBrightnesses: the monitor's entry goes last, the others stay.
+    state["save"] = 0
+    try:
+        entries = load()
+    except (OSError, GLib.Error):
+        entries = []
+    ours = next((e[:5] for e in entries if e[4] == "eDP-1"),
+                ("BOE", "0x0b0e", "0x00000000", "default", "eDP-1"))
+    entries = [e for e in entries if e[:5] != ours] + [(*ours, state["monitor"])]
+    data = GLib.Variant("a(sssssd)", entries).get_data_as_bytes().get_data()
+    with open(saved + ".tmp", "wb") as handle:
+        handle.write(data)
+    os.replace(saved + ".tmp", saved)
+    return False
+
+
+def save():
+    if state["save"]:
+        GLib.source_remove(state["save"])
+    state["save"] = GLib.timeout_add(300, save_now)
+
+
 def method(conn, sender, obj, iface, name, params, inv):
     args = params.unpack()
     if name == "SetAutoBrightnessTarget":
@@ -99,6 +130,7 @@ def method(conn, sender, obj, iface, name, params, inv):
         state["global"] = min(1.0, max(0.0, state["global"] + args[0] / 20))
         state["monitor"] = state["global"]
         sync()
+        save()
         conn.emit_signal(None, "/org/gnome/Shell/Brightness", "org.gnome.Shell.Brightness",
                          "BrightnessChanged", None)
     elif name == "Scale":
@@ -123,6 +155,7 @@ bus.register_object("/org/gnome/Shell/Brightness", node.interfaces[0], method, p
 bus.register_object("/org/gnome/Mutter/DisplayConfig", node.interfaces[1], method, prop, None)
 bus.register_object("/test", node.interfaces[2], method, prop, None)
 sync(immediately=True)          # what the shell does at start: the saved scale
+save()
 with open(path + ".start", "w") as handle:
     handle.write(f"{scale}\n")
 for name in ("org.gnome.Mutter.DisplayConfig", "org.gnome.Shell.Brightness", "test.Shell"):

@@ -18,6 +18,10 @@ by the user, so a write behind a running shell would surface later as a
 jump. Entries are only ever changed, never added: the monitor's identity is
 Mutter's to give.
 
+While the shell runs, the file is the shell's own word on its scale, saved
+300 ms after each change by the user; backlight.GnomeShellMethod reads it
+to catch a press it could not see on the panel (saved_scale).
+
 The scale written is capped at one half. The shell shows
 clamp(target + scale - 0.5); with the scale at or below one half every level
 down to the bottom stays reachable, while a target above 1 still reaches the
@@ -88,6 +92,21 @@ def read(path):
     if not all(0.0 <= entry[5] <= 1.0 for entry in entries):
         return None
     return entries
+
+
+def saved_scale(connector, path=None):
+    """The scale the shell saved last for `connector` ("eDP-1"), or None.
+
+    The shell saves every monitor it knows, removing the monitor's old entry
+    and appending the new one, so of several entries for one connector (a
+    replaced panel, another colour mode) the last is the current one."""
+    try:
+        entries = read(path or state_path())
+    except Exception as error:              # a GLib surprise: no answer
+        log.debug("could not read the shell's saved brightness: %s", error)
+        return None
+    values = [entry[5] for entry in entries or () if entry[4] == connector]
+    return values[-1] if values else None
 
 
 def write(path, entries):
