@@ -19,7 +19,7 @@ whenever you set the brightness yourself.
 |---|---|
 | **Follows the sun** | Ramps around sunrise and sunset, or brightness as a function of the sun's elevation, which adapts to the season by itself and works inside the polar circles. Sun positions are computed locally. |
 | **Looks even** | Ramps are shaped for the eye, not for the hardware: a geometric curve by default, so dusk does not sit bright for an hour and then collapse. |
-| **Weather** | Optional: up to 20 % less light under full overcast (adjustable), from an [Open-Meteo](https://open-meteo.com) forecast. Fades out towards night. |
+| **Weather** | Optional: up to 40 % less light under full overcast (adjustable), from an [Open-Meteo](https://open-meteo.com) forecast. Fades out towards night. |
 | **Monitors and laptops** | External monitors over DDC/CI with `ddcutil`; laptop panels through GNOME, KDE Plasma or logind, so the desktop's slider and keys keep working. No root. |
 | **You stay in charge** | A level you set holds until the next phase. Pause for any time or until a time of day. On GNOME and Plasma the brightness keys move in Luxtide's own, finer steps. |
 | **Three ways to use it** | A tray icon, a GTK 4 settings window with a curve you can drag, and the `luxtide` / `dim` commands, all over one D-Bus API. |
@@ -88,7 +88,7 @@ Elsewhere: install the [requirements](#requirements), then
 ## Requirements
 
 - Linux with a D-Bus session; systemd is optional
-- Python 3.11+ and PyGObject; GTK 4 for the settings window
+- Python 3.11+, PyGObject and pycairo; GTK 4 for the settings window
 - `ddcutil` for external monitors (user in the `i2c` group, `i2c-dev` loaded)
 - Laptop panels need nothing extra: writes go through the desktop
   (GNOME 49+, Plasma 6) or through logind, so no root is needed
@@ -179,6 +179,12 @@ Tray menu: preset levels, *Pause* with configurable durations plus
 current level by default (`[levels] step`), at least one point, so that the
 steps look even and stay fine near the bottom. A middle click toggles a
 pause.
+
+*Show the percentage* (`[tray] show_level`) puts the level on the panel.
+GNOME's AppIndicator extension and Ayatana indicators show it next to the
+icon. Plasma, XFCE, Cinnamon, LXQt, waybar and other hosts show icons only,
+so there the number is drawn as the icon, in the colour of Plasma's panel
+text or, elsewhere, white with a dark outline.
 
 The settings window applies every change as you make it. Drag the chart's
 handles to set the levels and the ramp length, and use *Try* to show a level

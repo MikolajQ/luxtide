@@ -12,7 +12,7 @@ import time
 
 from gi.repository import Gio, GLib
 
-from . import autostart, policy
+from . import autostart, policy, trayicon
 from .prefs import load_ui_prefs
 
 log = logging.getLogger(__name__)
@@ -491,8 +491,12 @@ class Tray:
         self.status = {}
         self.menu = MenuModel()
         self._icon = ""
+        self._pixmaps = []
         self._tooltip = None
         self._label = ""
+        self._host = None                # process running the tray host
+        self._monitors = []
+        self._recolour_source = 0
         self._scroll_signs = {}
         self._said = set()
         self.name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
@@ -512,6 +516,10 @@ class Tray:
             self._watcher_appeared, self._watcher_vanished)
 
     def close(self):
+        self._watch_colours([])
+        if self._recolour_source:
+            GLib.source_remove(self._recolour_source)
+            self._recolour_source = 0
         Gio.bus_unwatch_name(self._watch)
         Gio.bus_unown_name(self._owner)
         for registration in self._registrations:
@@ -520,6 +528,14 @@ class Tray:
     # --- registration ------------------------------------------------------
 
     def _watcher_appeared(self, connection, name, owner):
+        host = self._process_name(owner)
+        if host != self._host:
+            self._host = host
+            log.debug("tray host: %s", host or "unknown")
+            self._watch_colours(trayicon.watched_files(host))
+            if self.status:
+                self.update(self.status)
+
         def done(conn, result):
             try:
                 conn.call_finish(result)
@@ -549,19 +565,58 @@ class Tray:
         self.status = status
         self._rebuild()
         icon = icon_name(status)
-        if icon != self._icon:
-            self._icon = icon
+        label, pixmaps = self._level_display()
+        if icon != self._icon or pixmaps != self._pixmaps:
+            self._icon, self._pixmaps = icon, pixmaps
             self._emit(ITEM_PATH, "org.kde.StatusNotifierItem", "NewIcon")
         tooltip = self._tooltip_value()
         if tooltip != self._tooltip:
             self._tooltip = tooltip
             self._emit(ITEM_PATH, "org.kde.StatusNotifierItem", "NewToolTip")
-        label = (f"{shown_level(status)}%" if status.get("show_level") and "level" in status
-                 else "")
         if label != self._label:
             self._label = label
             self._emit(ITEM_PATH, "org.kde.StatusNotifierItem", "XAyatanaNewLabel",
                        GLib.Variant("(ss)", (label, "100%")))
+
+    def _level_display(self):
+        """(label, pixmaps) for show_level: text next to the icon where the
+        host shows it, otherwise the number drawn as the icon. Until the
+        host is known, and without cairo, only the label."""
+        status = self.status
+        if not status.get("show_level") or "level" not in status or status.get("config_error"):
+            return "", []
+        text = str(shown_level(status))
+        if self._host is not None and not trayicon.label_host(self._host):
+            colour, outline = trayicon.colours(self._host)
+            pixmaps = trayicon.pixmaps(text, colour, outline)
+            if pixmaps:
+                return "", pixmaps
+        return f"{text}%", []
+
+    def _watch_colours(self, paths):
+        """Redraw the number when Plasma's theme or colours change."""
+        for monitor in self._monitors:
+            monitor.cancel()
+        self._monitors = []
+        for path in paths:
+            try:
+                monitor = Gio.File.new_for_path(str(path)).monitor_file(
+                    Gio.FileMonitorFlags.NONE, None)
+            except GLib.Error:
+                continue
+            monitor.connect("changed", self._colours_changed)
+            self._monitors.append(monitor)
+
+    def _colours_changed(self, *_args):
+        if self._recolour_source:
+            GLib.source_remove(self._recolour_source)
+
+        def fire():
+            self._recolour_source = 0
+            if self.status:
+                self.update(self.status)
+            return False
+        self._recolour_source = GLib.timeout_add(300, fire)
 
     def _rebuild(self):
         """Publish the menu for the current status; True when its shape changed."""
@@ -596,8 +651,10 @@ class Tray:
             "Title": ("s", "Luxtide"),
             "Status": ("s", "Active"),
             "WindowId": ("i", 0),
-            "IconName": ("s", self._icon or icon_name(self.status)),
-            "IconPixmap": ("a(iiay)", []),
+            # Hosts prefer a named icon to a pixmap, so the name goes while
+            # the number is drawn.
+            "IconName": ("s", "" if self._pixmaps else self._icon or icon_name(self.status)),
+            "IconPixmap": ("a(iiay)", self._pixmaps),
             "OverlayIconName": ("s", ""),
             "OverlayIconPixmap": ("a(iiay)", []),
             "AttentionIconName": ("s", ""),
@@ -633,19 +690,21 @@ class Tray:
         """+1 when positive deltas mean "up". GNOME Shell sends Clutter's
         convention, where scrolling down is positive; Plasma sends Qt's."""
         if sender not in self._scroll_signs:
-            sign = 1
-            try:
-                pid = self.connection.call_sync(
-                    "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
-                    "GetConnectionUnixProcessID", GLib.Variant("(s)", (sender,)),
-                    GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 1000, None).unpack()[0]
-                with open(f"/proc/{pid}/comm") as handle:
-                    if handle.read().strip().startswith("gnome-shell"):
-                        sign = -1
-            except (GLib.Error, OSError):
-                pass
-            self._scroll_signs[sender] = sign
+            process = self._process_name(sender)
+            self._scroll_signs[sender] = -1 if process.startswith("gnome-shell") else 1
         return self._scroll_signs[sender]
+
+    def _process_name(self, name):
+        """/proc/PID/comm of a bus name's owner, or "" when unknown."""
+        try:
+            pid = self.connection.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                "GetConnectionUnixProcessID", GLib.Variant("(s)", (name,)),
+                GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 1000, None).unpack()[0]
+            with open(f"/proc/{pid}/comm") as handle:
+                return handle.read().strip()
+        except (GLib.Error, OSError):
+            return ""
 
     # --- dbusmenu ----------------------------------------------------------
 

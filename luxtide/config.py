@@ -85,7 +85,7 @@ class Config:
     day_elevation: float = 6.0
     # [weather]
     weather_enabled: bool = False
-    weather_strength: int = 20         # % less light at 100 % cloud cover
+    weather_strength: int = 40         # % less light at 100 % cloud cover
     weather_refresh_minutes: int = 60
     weather_max_age_hours: int = 12
     # [ddc]
@@ -501,7 +501,9 @@ follow_manual = {_num(cfg.backlight_follow_manual)}
 
 [tray]
 enabled = {_num(cfg.tray_enabled)}
-# Show the current percentage next to the icon (GNOME AppIndicator only).
+# Show the current percentage: next to the icon where the panel shows text
+# (GNOME's AppIndicator extension, Ayatana indicators), elsewhere drawn as
+# the icon itself (Plasma, XFCE, Cinnamon, LXQt, waybar…).
 show_level = {_num(cfg.tray_show_level)}
 # Pause durations offered in the menu, in minutes.
 pause_presets = {presets}

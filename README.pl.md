@@ -19,7 +19,7 @@ jasność, nie wchodzi ci w drogę.
 |---|---|
 | **Według słońca** | Przejścia wokół wschodu i zachodu albo jasność zależna od wysokości słońca. Ten drugi tryb sam dopasowuje się do pory roku i działa nawet za kołem podbiegunowym. Położenie słońca liczone jest lokalnie. |
 | **Równo dla oka** | Przejścia mają kształt dobrany pod wzrok, nie pod sprzęt: domyślnie krzywa geometryczna, więc zmierzch nie trzyma pełnej jasności przez godzinę, by potem nagle zgasnąć. |
-| **Pogoda** | Opcjonalnie: do 20 % mniej światła przy pełnym zachmurzeniu (do ustawienia), z prognozy [Open-Meteo](https://open-meteo.com). Ku nocy efekt wygasa. |
+| **Pogoda** | Opcjonalnie: do 40 % mniej światła przy pełnym zachmurzeniu (do ustawienia), z prognozy [Open-Meteo](https://open-meteo.com). Ku nocy efekt wygasa. |
 | **Monitory i laptopy** | Monitory zewnętrzne przez DDC/CI (`ddcutil`); ekrany laptopów przez GNOME, KDE Plasma albo logind, więc suwak i klawisze pulpitu dalej działają. Bez roota. |
 | **Decydujesz ty** | Ręcznie ustawiony poziom obowiązuje do następnej fazy dnia. Pauza na dowolny czas albo do wybranej godziny. W GNOME i Plasmie klawisze jasności zmieniają ją własnym, drobniejszym krokiem Luxtide. |
 | **Trzy sposoby obsługi** | Ikona w zasobniku, okno ustawień w GTK 4 z krzywą do przeciągania i polecenia `luxtide` oraz `dim`. Wszystko przez jedno API D-Bus. |
@@ -91,7 +91,7 @@ znalazł.
 ## Wymagania
 
 - Linux z sesją D-Bus; systemd jest opcjonalny
-- Python 3.11+ i PyGObject; GTK 4 dla okna ustawień
+- Python 3.11+, PyGObject i pycairo; GTK 4 dla okna ustawień
 - `ddcutil` dla monitorów zewnętrznych (użytkownik w grupie `i2c`,
   załadowany moduł `i2c-dev`)
 - Ekrany laptopów nie potrzebują niczego więcej: zapis idzie przez pulpit
@@ -122,6 +122,12 @@ oraz *Custom…* na dowolny czas albo do godziny, *Back to schedule*.
 domyślnie 20 % bieżącego poziomu, co najmniej 1 punkt (`[levels] step`).
 Dzięki temu kroki wyglądają równo, a przy samym dole są drobne. Środkowy
 przycisk włącza i wyłącza pauzę.
+
+*Show the percentage* (`[tray] show_level`) pokazuje poziom na panelu.
+Rozszerzenie AppIndicator w GNOME i wskaźniki Ayatana wyświetlają go obok
+ikony. Plasma, XFCE, Cinnamon, LXQt, waybar i inne pokazują same ikony, więc
+tam liczba zastępuje ikonę: w kolorze tekstu panelu Plasmy, a gdzie indziej
+biała z ciemną obwódką.
 
 **Okno ustawień** stosuje każdą zmianę od razu. Poziomy i długość przejść
 ustawisz, przeciągając uchwyty na wykresie, a *Try* pokaże wybrany poziom na

@@ -53,7 +53,7 @@ day_elevation = 6
 enabled = no
 # Percent less brightness at 100 % cloud cover. Thinner cloud dims
 # proportionally less, and the effect fades out towards night.
-strength = 20
+strength = 40
 refresh_minutes = 60
 # Ignore a forecast that could not be refreshed for this long.
 max_age_hours = 12
@@ -99,7 +99,9 @@ follow_manual = yes
 
 [tray]
 enabled = yes
-# Show the current percentage next to the icon (GNOME AppIndicator only).
+# Show the current percentage: next to the icon where the panel shows text
+# (GNOME's AppIndicator extension, Ayatana indicators), elsewhere drawn as
+# the icon itself (Plasma, XFCE, Cinnamon, LXQt, waybar…).
 show_level = no
 # Pause durations offered in the menu, in minutes.
 pause_presets = 15, 30, 60, 120

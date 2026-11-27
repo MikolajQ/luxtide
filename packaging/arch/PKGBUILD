@@ -10,7 +10,7 @@ license=('MIT')
 # The project's former name.
 conflicts=('ddc-sun-dimmer')
 replaces=('ddc-sun-dimmer')
-depends=('gtk4' 'python' 'python-gobject')
+depends=('gtk4' 'python' 'python-cairo' 'python-gobject')
 # Part of base-devel, listed for machines without it.
 makedepends=('fakeroot' 'make')
 optdepends=('ddcutil: external monitors over DDC/CI'

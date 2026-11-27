@@ -787,12 +787,12 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.weather_switch = self._switch(lambda v: self._set("weather_enabled", v))
         self._row(grid, 0, "Dim on cloudy days", self.weather_switch)
 
-        self.strength_adjustment = Gtk.Adjustment(value=20, lower=0, upper=90,
+        self.strength_adjustment = Gtk.Adjustment(value=config_module.Config.weather_strength, lower=0, upper=90,
                                                   step_increment=1, page_increment=5)
         strength = Gtk.Scale(adjustment=self.strength_adjustment, hexpand=True,
                              draw_value=True, digits=0)
         strength.set_format_value_func(lambda _s, v: f"−{int(v)} %")
-        strength.add_mark(20, Gtk.PositionType.BOTTOM, None)
+        strength.add_mark(config_module.Config.weather_strength, Gtk.PositionType.BOTTOM, None)
         self.strength_adjustment.connect(
             "value-changed", lambda a: self._set("weather_strength", int(a.get_value())))
         self._row(grid, 1, "At full cloud cover", strength)
@@ -1121,8 +1121,8 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self._row(grid, 0, "Tray icon", self.tray_switch,
                   "on GNOME this needs the AppIndicator extension")
         self.show_level_switch = self._switch(lambda v: self._set("tray_show_level", v))
-        self._row(grid, 1, "Percentage next to the icon", self.show_level_switch,
-                  "GNOME only")
+        self._row(grid, 1, "Show the percentage", self.show_level_switch,
+                  "next to the icon on GNOME, as the icon on other desktops")
         self.presets_entry = Gtk.Entry(width_chars=20)
         self.presets_entry.connect("changed", self._presets_changed)
         self._row(grid, 2, "Pause durations", self.presets_entry,
